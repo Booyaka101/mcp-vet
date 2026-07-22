@@ -1,9 +1,9 @@
 # mcp-vet
 
-[![npm version](https://img.shields.io/npm/v/mcp-vet.svg)](https://www.npmjs.com/package/mcp-vet)
+[![npm version](https://img.shields.io/npm/v/@booyaka/mcp-vet.svg)](https://www.npmjs.com/package/@booyaka/mcp-vet)
 [![CI](https://github.com/Booyaka101/mcp-vet/actions/workflows/ci.yml/badge.svg)](https://github.com/Booyaka101/mcp-vet/actions/workflows/ci.yml)
-[![node](https://img.shields.io/node/v/mcp-vet.svg)](https://nodejs.org)
-[![license: MIT](https://img.shields.io/npm/l/mcp-vet.svg)](./LICENSE)
+[![node](https://img.shields.io/node/v/@booyaka/mcp-vet.svg)](https://nodejs.org)
+[![license: MIT](https://img.shields.io/npm/l/@booyaka/mcp-vet.svg)](./LICENSE)
 
 **On July 28, 2026 the Model Context Protocol ships its `2026-07-28` specification as final** — and it removes several things that today's MCP servers rely on. `mcp-vet` is a zero-config CLI that scans your MCP server source (TypeScript, JavaScript, and Python) for the exact patterns that will break client interop on that date, and tells you what to change.
 
@@ -11,7 +11,7 @@
 - Protocol changelog: <https://tokenmix.ai/blog/mcp-updates-changelog-every-protocol-change-2026>
 
 ```bash
-npx mcp-vet .
+npx @booyaka/mcp-vet .
 ```
 
 No account, no API key, no network calls — it parses your code locally (ts-morph for TS/JS, a bundled Python `ast` script for `.py`) and exits non-zero if it finds anything **BREAKING**, so you can drop it straight into CI.
@@ -135,9 +135,9 @@ switch (method) {
 ## Usage
 
 ```bash
-npx mcp-vet [paths...]        # scan directories and/or files (default: current directory)
-npx mcp-vet ./src ./packages  # multiple roots
-npx mcp-vet server.py         # a single file
+npx @booyaka/mcp-vet [paths...]        # scan directories and/or files (default: current directory)
+npx @booyaka/mcp-vet ./src ./packages  # multiple roots
+npx @booyaka/mcp-vet server.py         # a single file
 ```
 
 Globs `**/*.{ts,tsx,mts,cts,js,jsx,mjs,cjs}` and `**/*.py`, skipping `node_modules`, `.git`, `__pycache__`, `dist`, and `build`.
@@ -224,7 +224,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: { node-version: '20' }
-      - run: npx mcp-vet . --github-annotations
+      - run: npx @booyaka/mcp-vet . --github-annotations
 ```
 
 `setup-node` runners already include Python 3, which `mcp-vet` uses to scan `.py` files. If no interpreter is found, it automatically falls back to a regex scanner (reduced precision) unless you pass `--no-py-fallback`; TypeScript/JavaScript scanning is unaffected either way.
@@ -232,7 +232,7 @@ jobs:
 To upload results to GitHub code scanning instead:
 
 ```yaml
-      - run: npx mcp-vet . --sarif mcp-vet.sarif --fail-on none
+      - run: npx @booyaka/mcp-vet . --sarif mcp-vet.sarif --fail-on none
       - uses: github/codeql-action/upload-sarif@v3
         with: { sarif_file: mcp-vet.sarif }
 ```
