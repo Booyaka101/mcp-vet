@@ -60,6 +60,28 @@ export const RULES: Record<PatternId, RuleMeta> = {
       '// using the NEW argument shapes — review your params against the RC schema.',
     ].join('\n'),
   },
+  TASKS_LIST_REMOVED: {
+    id: 'TASKS_LIST_REMOVED',
+    label: 'removed tasks/list method',
+    severity: 'BREAKING',
+    explanation:
+      'The tasks/list method is removed entirely on 2026-07-28 (unsafe once protocol-level sessions are gone); there is no drop-in replacement — stop calling/handling it and track task handles yourself.',
+    after: [
+      '// 2026-07-28: tasks/list is REMOVED — there is no server-side task listing.',
+      '// A client tracks the task handles it received from tools/call; there is nothing to enumerate.',
+    ].join('\n'),
+  },
+  TASKS_RESULT_REMOVED: {
+    id: 'TASKS_RESULT_REMOVED',
+    label: 'removed tasks/result method',
+    severity: 'BREAKING',
+    explanation:
+      'The blocking tasks/result method is removed on 2026-07-28 (SEP-2663); poll for completion and read the result with tasks/get instead.',
+    after: [
+      '// 2026-07-28: tasks/result is REMOVED — the blocking result call is gone.',
+      '// Poll tasks/get until the task is terminal and read its result from there.',
+    ].join('\n'),
+  },
   ROOTS_CAP: {
     id: 'ROOTS_CAP',
     label: 'roots capability',
@@ -91,6 +113,42 @@ const CAP_NAMES: Record<string, PatternId> = {
   roots: 'ROOTS_CAP',
   sampling: 'SAMPLING_CAP',
   logging: 'LOGGING_CAP',
+};
+
+// Method-name strings of the deprecated capabilities (SEP-2577). The methods are
+// deprecated, not just the capability keys — a server that references these by
+// method string (with no literal `capabilities` object nearby) is caught here.
+const DEPRECATED_METHODS: Record<string, PatternId> = {
+  'roots/list': 'ROOTS_CAP',
+  'notifications/roots/list_changed': 'ROOTS_CAP',
+  'sampling/createMessage': 'SAMPLING_CAP',
+  'logging/setLevel': 'LOGGING_CAP',
+  'notifications/message': 'LOGGING_CAP',
+};
+
+// SDK request/notification *schema constants* — how real MCP SDK servers register
+// handlers (e.g. `server.setRequestHandler(InitializeRequestSchema, ...)`). Matching
+// the exact string literal alone misses these entirely.
+const SCHEMA_CONSTANTS: Record<string, PatternId> = {
+  InitializeRequestSchema: 'INITIALIZE_HANDLER',
+  InitializedNotificationSchema: 'INITIALIZE_HANDLER',
+  ListRootsRequestSchema: 'ROOTS_CAP',
+  RootsListChangedNotificationSchema: 'ROOTS_CAP',
+  CreateMessageRequestSchema: 'SAMPLING_CAP',
+  SetLevelRequestSchema: 'LOGGING_CAP',
+  LoggingMessageNotificationSchema: 'LOGGING_CAP',
+  ListTasksRequestSchema: 'TASKS_LIST_REMOVED',
+  GetTaskResultRequestSchema: 'TASKS_RESULT_REMOVED',
+  GetTaskRequestSchema: 'TASKS_LEGACY',
+  CancelTaskRequestSchema: 'TASKS_LEGACY',
+};
+
+// SDK capability *constructor* identifiers (esp. the Python SDK:
+// `ClientCapabilities(roots=RootsCapability())`). Unambiguous deprecated-feature use.
+const CAP_CONSTRUCTORS: Record<string, PatternId> = {
+  RootsCapability: 'ROOTS_CAP',
+  SamplingCapability: 'SAMPLING_CAP',
+  LoggingCapability: 'LOGGING_CAP',
 };
 
 function snippet(lines: string[], line: number): string {
@@ -184,6 +242,43 @@ export function applyRules(
       (v === 'tasks/get' || v === 'tasks/update' || v === 'tasks/cancel')
     ) {
       push('TASKS_LEGACY', t, 'high');
+    }
+
+    // Rule 4b — tasks/list is removed entirely (exact string literal)
+    if (t.kind === 'string' && v === 'tasks/list') {
+      push('TASKS_LIST_REMOVED', t, 'high');
+    }
+
+    // Rule 4c — tasks/result is removed (exact string literal)
+    if (t.kind === 'string' && v === 'tasks/result') {
+      push('TASKS_RESULT_REMOVED', t, 'high');
+    }
+
+    // Rule 8 — deprecated-capability method strings (exact, high confidence)
+    if (t.kind === 'string' && DEPRECATED_METHODS[v]) {
+      push(DEPRECATED_METHODS[v], t, 'high');
+    }
+
+    // Rule 9 — SDK schema-constant identifiers used to register handlers
+    if (t.kind === 'name' && SCHEMA_CONSTANTS[v]) {
+      push(SCHEMA_CONSTANTS[v], t, 'high');
+    }
+
+    // Rule 9b — SDK capability constructor identifiers (RootsCapability, ...)
+    if (t.kind === 'name' && CAP_CONSTRUCTORS[v]) {
+      push(CAP_CONSTRUCTORS[v], t, 'high');
+    }
+
+    // Rule 10 — `sessionIdGenerator` option (TS SDK session usage). The correct
+    // migration is `sessionIdGenerator: undefined`, so the analyzer marks that
+    // benign; only a real generator is flagged, at medium confidence. TS only.
+    if (
+      opts.source === 'ts-morph' &&
+      t.kind === 'key' &&
+      v === 'sessionIdGenerator' &&
+      !t.benign
+    ) {
+      push('MCP_SESSION_ID', t, 'medium');
     }
 
     // Rules 5-7 — deprecated capabilities.

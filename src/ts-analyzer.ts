@@ -166,12 +166,16 @@ export function analyzeTs(absPath: string, text: string): Token[] {
       if (kind === SyntaxKind.NumericLiteral) {
         const raw = node.getText();
         let value = raw;
+        let anchor: Node = node; // for negatives, anchor at the '-' so col + value.length is exact
         const parent = node.getParent();
         if (parent && parent.getKind() === SyntaxKind.PrefixUnaryExpression) {
           const pu = parent.asKind(SyntaxKind.PrefixUnaryExpression);
-          if (pu && pu.getOperatorToken() === SyntaxKind.MinusToken) value = '-' + raw;
+          if (pu && pu.getOperatorToken() === SyntaxKind.MinusToken) {
+            value = '-' + raw;
+            anchor = parent;
+          }
         }
-        const { line, col } = posOf(node);
+        const { line, col } = posOf(anchor);
         tokens.push({ kind: 'number', value, line, col });
         return;
       }
@@ -184,15 +188,23 @@ export function analyzeTs(absPath: string, text: string): Token[] {
     });
 
     // Object literal keys (roots:, "sampling":, logging shorthand, ...)
-    const emitKey = (nameNode: Node, value: string) => {
+    const emitKey = (nameNode: Node, value: string, benign = false) => {
       const { line, col } = posOf(nameNode);
       const tok: Token = { kind: 'key', value, line, col };
       if (CAP.has(value)) tok.inCapabilities = isInCapabilities(nameNode);
+      if (benign) tok.benign = true;
       tokens.push(tok);
     };
     for (const pa of sf.getDescendantsOfKind(SyntaxKind.PropertyAssignment)) {
       try {
-        emitKey(pa.getNameNode(), pa.getName());
+        const name = pa.getName();
+        // `sessionIdGenerator: undefined` (or null) is the migrated, stateless form.
+        let benign = false;
+        if (name === 'sessionIdGenerator') {
+          const init = pa.getInitializer()?.getText();
+          benign = init === 'undefined' || init === 'null';
+        }
+        emitKey(pa.getNameNode(), name, benign);
       } catch {
         /* computed / unusual key */
       }

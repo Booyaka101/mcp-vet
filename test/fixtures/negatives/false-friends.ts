@@ -5,7 +5,7 @@ export function initializeServer() {
 } // identifier, not the exact 'initialize' string
 const label = 'reinitialize the cache'; // not the exact string
 const codes = { notFound: -32601, invalid: -32602 }; // not -32002
-const methods = ['tasks/list', 'tasks/create', 'tools/call']; // not the 3 legacy methods
+const methods = ['tasks/create', 'tools/call']; // tasks/create & tools/call are unaffected
 const routing = { roots: ['/a'], logging: true }; // plain object, unrelated to any server-feature block
 export function getRoots() {
   return routing.roots;

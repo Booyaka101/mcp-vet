@@ -8,7 +8,7 @@ def initialize_server():
 
 label = "reinitialize the cache"
 codes = {"notFound": -32601, "invalid": -32602}
-methods = ["tasks/list", "tasks/create", "tools/call"]
+methods = ["tasks/create", "tools/call"]
 routing = {"roots": ["/a"], "logging": True}
 
 

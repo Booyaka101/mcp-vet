@@ -1,5 +1,5 @@
 // Fixture: task handling + error codes.
-// Triggers: TASKS_LEGACY (rule 4), ERROR_CODE_32002 (rule 3).
+// Triggers: TASKS_LEGACY (rule 4), TASKS_LIST_REMOVED (rule 4b), ERROR_CODE_32002 (rule 3).
 
 const RESOURCE_MISSING = -32002; // BREAKING: must become -32602
 
@@ -11,9 +11,17 @@ export function handle(method: string, id: number) {
       return updateTask(id);
     case 'tasks/cancel': // BREAKING: legacy Tasks method shape
       return cancelTask(id);
+    case 'tasks/list': // BREAKING: removed entirely on 2026-07-28
+      return listTasks();
+    case 'tasks/result': // BREAKING: removed — poll with tasks/get instead
+      return getTask(id);
     default:
       return { error: { code: -32002, message: 'Resource not found' } }; // BREAKING
   }
+}
+
+function listTasks() {
+  return { tasks: [] };
 }
 
 function getTask(id: number) {

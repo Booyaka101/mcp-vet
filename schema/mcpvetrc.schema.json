@@ -1,0 +1,65 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://raw.githubusercontent.com/Booyaka101/mcp-vet/main/schema/mcpvetrc.schema.json",
+  "title": "mcp-vet configuration",
+  "description": "Configuration for the mcp-vet CLI (.mcpvetrc.json / mcp-vet.config.json). CLI flags override these values.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "Optional JSON Schema reference for editor autocomplete/validation."
+    },
+    "ignore": {
+      "type": "array",
+      "description": "Gitignore-style globs to skip.",
+      "items": { "type": "string" }
+    },
+    "only": {
+      "type": "array",
+      "description": "Run only these pattern ids.",
+      "items": { "$ref": "#/$defs/patternId" }
+    },
+    "disable": {
+      "type": "array",
+      "description": "Skip these pattern ids.",
+      "items": { "$ref": "#/$defs/patternId" }
+    },
+    "failOn": {
+      "description": "Which findings cause a non-zero exit.",
+      "enum": ["breaking", "any", "none"],
+      "default": "breaking"
+    },
+    "minConfidence": {
+      "description": "Report only findings at or above this confidence.",
+      "enum": ["high", "medium", "low"],
+      "default": "low"
+    },
+    "maxFileSizeKb": {
+      "type": "number",
+      "description": "Skip files larger than this many KB (0 = no limit).",
+      "minimum": 0,
+      "default": 1536
+    },
+    "pythonFallback": {
+      "type": "boolean",
+      "description": "Use the regex fallback when no Python interpreter is available.",
+      "default": true
+    }
+  },
+  "$defs": {
+    "patternId": {
+      "type": "string",
+      "enum": [
+        "MCP_SESSION_ID",
+        "INITIALIZE_HANDLER",
+        "ERROR_CODE_32002",
+        "TASKS_LEGACY",
+        "TASKS_LIST_REMOVED",
+        "ROOTS_CAP",
+        "SAMPLING_CAP",
+        "LOGGING_CAP"
+      ]
+    }
+  }
+}

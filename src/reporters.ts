@@ -4,7 +4,7 @@ import chalk from 'chalk';
 import { Finding, Severity, ALL_PATTERN_IDS } from './types';
 import { RULES } from './rules';
 import { ScanResult } from './scanner';
-import { SPEC_URL, SPEC_DATE, getVersion } from './constants';
+import { SPEC_URL, SPEC_DATE, MANUAL_REVIEW, getVersion } from './constants';
 
 function makeChalk(color: boolean | undefined) {
   // color === true -> force on; false -> force off; undefined -> auto-detect
@@ -58,6 +58,7 @@ export function reportTerminal(result: ScanResult, opts: TerminalOptions = {}): 
       c.green('✔ mcp-vet: no matching 2026-07-28 breaking or deprecated patterns found') +
         c.gray(` — ${result.filesScanned} file(s) scanned${suffix}`),
     );
+    printManualReview(c);
     return;
   }
 
@@ -87,6 +88,16 @@ export function reportTerminal(result: ScanResult, opts: TerminalOptions = {}): 
     result.suppressedCount > 0 ? c.gray(` (${result.suppressedCount} suppressed)`) : '';
   console.log((breaking > 0 ? c.red.bold(summary) : c.yellow.bold(summary)) + suppressed);
   console.log(c.gray(`See ${SPEC_URL}`));
+  printManualReview(c);
+}
+
+/** One-line pointer to the changes static analysis can't catch — keeps the tool honest. */
+function printManualReview(c: any): void {
+  console.error(
+    c.gray(
+      `note: ${MANUAL_REVIEW.length} more 2026-07-28 changes need manual review (SSE push, required headers, auth, JSON Schema 2020-12) — see the README "Needs manual review" section.`,
+    ),
+  );
 }
 
 function mdEscape(s: string): string {

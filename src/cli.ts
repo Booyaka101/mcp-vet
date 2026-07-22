@@ -13,7 +13,9 @@ import {
   writeJson,
   writeSarif,
   printGithubAnnotations,
+  renderJson,
 } from './reporters';
+import { applyFixes } from './autofix';
 
 const CONF_VALUES: Confidence[] = ['high', 'medium', 'low'];
 const FAILON_VALUES: FailOn[] = ['breaking', 'any', 'none'];
@@ -80,6 +82,9 @@ program
   .option('--max-file-size <kb>', 'skip files larger than this many KB (0 = no limit)', '1536')
   .option('--no-py-fallback', 'disable the regex fallback when no Python interpreter is found')
   .option('--config <path>', 'path to a config file (.mcpvetrc.json)')
+  .option('--fix', 'auto-apply the safe mechanical fixes in place (currently: -32002 → -32602)')
+  .option('--dry-run', 'with --fix: print the rewrites that would be made, without changing files')
+  .option('--json', 'print findings as a JSON array to stdout (implies a quiet terminal report)')
   .option('--color', 'force colored output')
   .option('--no-color', 'disable colored output')
   .option('--quiet', 'suppress the human-readable terminal report')
@@ -101,6 +106,9 @@ const opts = program.opts<{
   maxFileSize: string;
   pyFallback: boolean;
   config?: string;
+  fix?: boolean;
+  dryRun?: boolean;
+  json?: boolean;
   color?: boolean;
   quiet?: boolean;
 }>();
@@ -146,7 +154,8 @@ const disable = cliDisable ?? normalizeIds(config.disable);
 
 let enabled = new Set<PatternId>(ALL_PATTERN_IDS);
 if (only && only.length) enabled = new Set(only.filter((id) => ALL_PATTERN_IDS.includes(id)));
-else if (disable && disable.length) {
+// `disable` always applies on top — so a CLI --disable still narrows a config `only`.
+if (disable && disable.length) {
   for (const id of disable) enabled.delete(id);
 }
 if (enabled.size === 0) fail('no rules enabled after applying --only/--disable.');
@@ -197,13 +206,49 @@ try {
   throw err;
 }
 
+// --- Autofix (before reporting, so the report/exit reflect what remains) ---
+if (opts.fix) {
+  const say = opts.json ? console.error : console.log; // keep stdout clean for --json
+  const fr = applyFixes(result.findings, { dryRun: opts.dryRun });
+  if (opts.dryRun) {
+    if (fr.preview.length === 0) {
+      say('mcp-vet: --fix --dry-run — nothing to auto-fix.');
+    } else {
+      say(`mcp-vet: --fix --dry-run — ${fr.preview.length} rewrite(s) that would be applied (no files changed):`);
+      for (const p of fr.preview) {
+        say(`  ${p.file}:${p.line}`);
+        say(`    - ${p.before.trim()}`);
+        say(`    + ${p.after.trim()}`);
+      }
+    }
+  } else {
+    if (fr.fixedCount > 0) {
+      const fixed = new Set(fr.fixedFindings);
+      result.findings = result.findings.filter((f) => !fixed.has(f));
+    }
+    say(
+      fr.fixedCount > 0
+        ? `mcp-vet: fixed ${fr.fixedCount} occurrence(s) of -32002 → -32602 in ${fr.filesChanged.length} file(s).`
+        : 'mcp-vet: --fix found nothing to auto-fix.',
+    );
+  }
+}
+
 // --- Report ---
+const quiet = opts.quiet || opts.json;
+// Notices (Wrote ...) go to stderr in --json mode so stdout stays pure JSON.
+const notify = (msg: string) => (opts.json ? console.error(msg) : console.log(msg));
+
 if (opts.githubAnnotations) {
   printGithubAnnotations(result.findings);
 }
 
-if (!opts.quiet) {
+if (!quiet) {
   reportTerminal(result, { color });
+}
+
+if (opts.json) {
+  process.stdout.write(renderJson(result) + '\n');
 }
 
 if (opts.sarif) {
@@ -213,7 +258,7 @@ if (opts.sarif) {
   );
   try {
     writeSarif(result, sarifPath);
-    if (!opts.quiet) console.log(`Wrote ${sarifPath}`);
+    if (!quiet) notify(`Wrote ${sarifPath}`);
   } catch (err) {
     console.error(`mcp-vet: failed to write SARIF: ${(err as Error).message}`);
   }
@@ -223,9 +268,9 @@ if (opts.files) {
   try {
     const md = writeMarkdown(result, opts.outDir);
     const json = writeJson(result, opts.outDir);
-    if (!opts.quiet) {
-      console.log(`Wrote ${md}`);
-      console.log(`Wrote ${json}`);
+    if (!quiet) {
+      notify(`Wrote ${md}`);
+      notify(`Wrote ${json}`);
     }
   } catch (err) {
     console.error(`mcp-vet: failed to write report files: ${(err as Error).message}`);

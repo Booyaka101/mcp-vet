@@ -7,6 +7,18 @@ export const SPEC_URL =
 export const CHANGELOG_URL =
   'https://tokenmix.ai/blog/mcp-updates-changelog-every-protocol-change-2026';
 
+/**
+ * 2026-07-28 changes that are real but NOT reliably detectable by static token
+ * analysis — surfaced to the user so the tool is honest about its scope rather
+ * than implying "clean === fully migrated".
+ */
+export const MANUAL_REVIEW: string[] = [
+  'the long-lived server→client SSE push channel is removed (a server may only send requests while handling one)',
+  'Streamable HTTP now requires Mcp-Method and Mcp-Name headers that mirror the JSON-RPC body',
+  'auth hardening: validate the RFC 9207 `iss` param, send OIDC `application_type`, bind tokens to the issuer',
+  'tool inputSchema/outputSchema may now be full JSON Schema 2020-12 (do not auto-dereference external $ref)',
+];
+
 /** Resolve the package version from package.json, tolerating layout differences. */
 export function getVersion(): string {
   const candidates = [

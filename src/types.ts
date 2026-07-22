@@ -7,6 +7,8 @@ export type PatternId =
   | 'INITIALIZE_HANDLER'
   | 'ERROR_CODE_32002'
   | 'TASKS_LEGACY'
+  | 'TASKS_LIST_REMOVED'
+  | 'TASKS_RESULT_REMOVED'
   | 'ROOTS_CAP'
   | 'SAMPLING_CAP'
   | 'LOGGING_CAP';
@@ -16,6 +18,8 @@ export const ALL_PATTERN_IDS: PatternId[] = [
   'INITIALIZE_HANDLER',
   'ERROR_CODE_32002',
   'TASKS_LEGACY',
+  'TASKS_LIST_REMOVED',
+  'TASKS_RESULT_REMOVED',
   'ROOTS_CAP',
   'SAMPLING_CAP',
   'LOGGING_CAP',
@@ -45,6 +49,11 @@ export interface Token {
    * method-comparison context (used to raise confidence for `initialize`).
    */
   registration?: boolean;
+  /**
+   * True when this token is an already-migrated no-op that must NOT be flagged —
+   * e.g. `sessionIdGenerator: undefined`, the documented stateless migration.
+   */
+  benign?: boolean;
 }
 
 export interface Finding {

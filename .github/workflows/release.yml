@@ -1,0 +1,34 @@
+name: Release
+
+# Publishes @booyaka/mcp-vet to npm with provenance when a v* tag is pushed.
+# Requires an NPM_TOKEN secret (Automation token) on the repository.
+on:
+  push:
+    tags: ['v*']
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # required for npm provenance
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      # Idempotent: skip if this version is already on npm (e.g. published by hand).
+      - name: Publish to npm (with provenance) if new
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          if npm view "@booyaka/mcp-vet@$VERSION" version >/dev/null 2>&1; then
+            echo "@booyaka/mcp-vet@$VERSION already published — skipping."
+          else
+            npm publish --provenance --access public
+          fi
