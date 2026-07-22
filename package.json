@@ -1,0 +1,60 @@
+{
+  "name": "mcp-vet",
+  "version": "0.2.0",
+  "description": "Scan MCP server source code for patterns that break under the 2026-07-28 Model Context Protocol spec release candidate.",
+  "type": "commonjs",
+  "bin": {
+    "mcp-vet": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "author": "Booyaka101 <cbosch101@gmail.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Booyaka101/mcp-vet.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Booyaka101/mcp-vet/issues"
+  },
+  "homepage": "https://github.com/Booyaka101/mcp-vet#readme",
+  "publishConfig": {
+    "access": "public"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "linter",
+    "static-analysis",
+    "migration",
+    "breaking-changes",
+    "2026-07-28",
+    "sarif",
+    "ci",
+    "ast",
+    "cli",
+    "typescript",
+    "python"
+  ],
+  "license": "MIT",
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node scripts/copy-assets.mjs",
+    "prepare": "npm run build",
+    "test": "npm run build && node --test test/scan.test.mjs"
+  },
+  "dependencies": {
+    "chalk": "^4.1.2",
+    "commander": "^12.1.0",
+    "ts-morph": "^23.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "typescript": "^5.5.4"
+  }
+}

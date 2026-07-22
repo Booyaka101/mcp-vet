@@ -1,0 +1,11 @@
+node_modules/
+dist/
+mcp-vet-report.md
+mcp-vet-results.json
+mcp-vet.sarif
+*.log
+.tmp-test/
+.claude/settings.local.json
+PROGRESS.md
+
+*.tgz
