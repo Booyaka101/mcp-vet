@@ -15,7 +15,7 @@ npx @booyaka/mcp-vet .
 ```
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/Booyaka101/mcp-vet/main/assets/demo.svg" alt="mcp-vet scanning a server — BREAKING and DEPRECATED findings with before/after fixes and confidence tags" width="720">
+  <img src="https://raw.githubusercontent.com/Booyaka101/mcp-vet/main/assets/demo.png" alt="mcp-vet scanning a server — BREAKING and DEPRECATED findings with before/after fixes and confidence tags" width="720">
 </p>
 
 No account, no API key, no network calls — it parses your code locally (ts-morph for TS/JS, a bundled Python `ast` script for `.py`) and exits non-zero if it finds anything **BREAKING**, so you can drop it straight into CI.
