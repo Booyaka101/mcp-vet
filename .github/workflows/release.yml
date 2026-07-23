@@ -21,11 +21,18 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm test
-      # Idempotent: skip if this version is already on npm (e.g. published by hand).
+      # Publishes only when an NPM_TOKEN is configured AND this version is new.
+      # Without a token (the maintainer publishes manually with 2FA), the build +
+      # tests above still run as release validation and this step skips cleanly —
+      # so a tag push never red-X's just because CI can't do the interactive 2FA.
       - name: Publish to npm (with provenance) if new
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
+          if [ -z "$NODE_AUTH_TOKEN" ]; then
+            echo "No NPM_TOKEN configured — build + tests passed; publish manually (npm publish, 2FA). Skipping."
+            exit 0
+          fi
           VERSION=$(node -p "require('./package.json').version")
           if npm view "@booyaka/mcp-vet@$VERSION" version >/dev/null 2>&1; then
             echo "@booyaka/mcp-vet@$VERSION already published — skipping."
