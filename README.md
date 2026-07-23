@@ -54,7 +54,7 @@ sse-polling.ts:107:13    BREAKING   MCP_SESSION_ID [medium]
 6 finding(s): 5 BREAKING, 1 DEPRECATED
 ```
 
-Note it catches the `sessionIdGenerator` session usage — the real signal in SDK-based servers, which usually never write the literal `Mcp-Session-Id` string. And it stays quiet where it should: the `Mcp-Session-Id` mentioned in a *comment*, the `initialize` in a comment in `dual-era.ts`, and the `sampling/createMessage` in `sampling.ts` (which appears only in comments and behind the `requestSampling()` helper) are all left alone. That precision — structural AST checks, not text matching — is what keeps the noise down on a real codebase: **6 findings, 0 false positives.**
+Note it catches the `sessionIdGenerator` session usage — the real signal in SDK-based servers, which usually never write the literal `Mcp-Session-Id` string. And it stays quiet where it should: the `Mcp-Session-Id` mentioned in a *comment*, the `initialize` in a comment in `dual-era.ts`, and the `sampling/createMessage` in `sampling.ts` (which appears only in comments and behind the `requestSampling()` helper) are all left alone. That precision — structural AST checks, not text matching — is what keeps the noise down on a real codebase: **6 findings, 0 false positives on these files.** (Across the full labeled corpus it's 104/105 true positives — see [BENCHMARK.md](./BENCHMARK.md).)
 
 ---
 
