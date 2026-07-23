@@ -187,7 +187,7 @@ case 'tasks/list': return listTasks();
 - **The long-lived server→client SSE push channel is removed** — a server may only send requests to the client *while it is actively processing a client request*. Standing push streams / out-of-band notifications need rework.
 - **Streamable HTTP now requires `Mcp-Method` and `Mcp-Name` headers** that mirror the JSON-RPC body; servers must reject requests where headers and body disagree.
 - **Auth hardening** — validate the RFC 9207 `iss` parameter, declare OIDC `application_type` on Dynamic Client Registration, and bind tokens to the issuing authorization server.
-- **Tool schemas may now be full JSON Schema 2020-12** (`oneOf`/`anyOf`/`$ref`/conditionals); do not auto-dereference external `$ref` URIs.
+- **Tool schemas may now be full JSON Schema 2020-12** (`oneOf`/`anyOf`/`$ref`/conditionals); do not auto-dereference external `$ref` URIs. The *dialect* half of this — schemas still declaring or using draft-07 forms — **is** detectable at runtime: [`mcp-vet probe`](#vet-a-running-server-mcp-vet-probe) checks it against your live server.
 
 The CLI prints a one-line reminder of these after every scan.
 
@@ -213,6 +213,44 @@ writes nine ready-to-fire JSON fixtures plus a `CHECKLIST.md`, covering the runt
 
 Each fixture is a plain JSON description (`send` headers + JSON-RPC body, `expect` notes) you can replay with curl, supertest, pytest + httpx, or any HTTP harness. The checklist also spells out the **dual-version rollout matrix** — run both `2025-11-25` and `2026-07-28` paths until your clients have all moved — and a **client-side assumptions** list (session resume, per-request `_meta`, retries landing on other instances, `tools/list` revalidation).
 
+## Vet a running server (`mcp-vet probe`)
+
+Where the scan reads your *source*, `probe` talks to your *running server* over the wire — stdio (a command it spawns) or Streamable HTTP (a URL) — and checks the two 2026-07-28 violations that only exist at runtime:
+
+| ID | Severity | What it checks |
+| --- | --- | --- |
+| `json-schema-dialect` | 🟡 WARN | calls `tools/list` and inspects every tool's `inputSchema`/`outputSchema` for a pre-2020-12 JSON Schema dialect ([SEP-2106](https://modelcontextprotocol.io/seps/2106-json-schema-2020-12)) — an explicit draft-04/-06/-07 `$schema` (**high** confidence), or no `$schema` but draft-only keyword forms: `definitions` instead of `$defs`, `$ref: "#/definitions/…"`, boolean `exclusiveMinimum`/`exclusiveMaximum`, array-form `items` (**medium** confidence) |
+| `requires-initialize-handshake` | 🔴 ERROR | with `--spec-version 2026-07-28`: makes a **stateless first request** — no `initialize`, capabilities/clientInfo/protocolVersion in `_meta` per the RC — and flags a server that rejects it or hangs waiting for the removed handshake |
+
+```bash
+# vet the schemas of a stdio server (spawns the command; a lone .js file runs with Node)
+npx @booyaka/mcp-vet probe node ./dist/server.js
+
+# full 2026-07-28 readiness: stateless first contact + schema dialects
+npx @booyaka/mcp-vet probe --spec-version 2026-07-28 http://localhost:3000/mcp
+```
+
+```text
+mcp-vet probe — node ./dist/server.js · spec 2026-07-28 · stdio · 12 tool(s) listed
+  stateless probe: stateless tools/list was rejected: -32002 Server not initialized
+  fallback probe: initialize handshake + tools/list succeeded
+
+ERROR  requires-initialize-handshake [high]
+    The server rejected (or hung on) a stateless 2026-07-28-style first request ...
+WARN   json-schema-dialect [high]
+    tool "echo" inputSchema: $schema = http://json-schema.org/draft-07/schema# (draft-07)
+```
+
+The stateless verdict is **cross-checked** before it becomes a violation: `requires-initialize-handshake` is only emitted when the classic `2025-11-25` handshake path *does* work — a dead or non-MCP server is an operational error (exit 2), never a false violation. The dialect walker recurses only into schema positions (applicators like `properties`/`allOf`), so a *property* literally named `definitions` is never mistaken for the draft-07 keyword, and an explicit 2020-12 `$schema` declaration is trusted.
+
+Probe findings use the same report formats as the scan: `--json` (machine-readable array on stdout) and `--sarif [file]` (SARIF 2.1.0 — `ERROR` maps to `error`, `WARN` to `warning`), plus `--fail-on breaking|any|none` (default `breaking`: exit 1 only on `ERROR`), `--timeout <ms>` (default 8000, also the hang-detection window), `--quiet`, and `--color`/`--no-color`.
+
+Try it against the official reference server — the July 2026 `@modelcontextprotocol/server-everything` answers stateless requests, but its tool schemas still declare draft-07, and `probe` catches all of them:
+
+```bash
+npx @booyaka/mcp-vet probe --spec-version 2026-07-28 npx -y mcp-server-everything stdio
+```
+
 ## Usage
 
 ```bash
@@ -221,6 +259,7 @@ npx @booyaka/mcp-vet . --fix           # scan, and auto-apply the mechanical -32
 npx @booyaka/mcp-vet ./src ./packages  # multiple roots
 npx @booyaka/mcp-vet server.py         # a single file
 npx @booyaka/mcp-vet fixtures ./dir    # write runtime conformance fixtures + checklist (default: ./mcp-vet-fixtures)
+npx @booyaka/mcp-vet probe <url|cmd>   # vet a RUNNING server's wire behavior (see section above)
 ```
 
 Globs `**/*.{ts,tsx,mts,cts,js,jsx,mjs,cjs}` and `**/*.py`, skipping `node_modules`, `.git`, `__pycache__`, `dist`, and `build`.
@@ -426,10 +465,10 @@ Also exported: `renderJson` / `renderMarkdown` / `renderSarif`, `RULES`, and the
 ```bash
 npm install      # installs deps and builds (via prepare)
 npm run build    # tsc -> dist/ + copies the Python script
-npm test         # builds, then runs the Node.js built-in test runner (30 tests)
+npm test         # builds, then runs the Node.js built-in test runner (55 tests)
 ```
 
-Test fixtures live in `test/fixtures/` (dirty TS + Python servers, a `clean/` server with zero violations, `negatives/` true-negatives, a `confidence/` gradient, and `suppress/` cases).
+Test fixtures live in `test/fixtures/` (dirty TS + Python servers, a `clean/` server with zero violations, `negatives/` true-negatives, a `confidence/` gradient, and `suppress/` cases). Runtime-probe fixtures live in `test/probe-fixtures/` — minimal stdio + Streamable-HTTP MCP servers: one returning draft-07 schemas, one requiring the initialize handshake, and one fully stateless 2026-07-28-native.
 
 ## License
 

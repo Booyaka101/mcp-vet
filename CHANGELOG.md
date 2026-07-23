@@ -4,6 +4,49 @@ All notable changes to `mcp-vet` are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0]
+
+The runtime-probe release — `mcp-vet probe` connects to a *running* MCP server
+(stdio command or Streamable HTTP URL) and detects the two 2026-07-28 violation
+categories that only exist on the wire, not in source.
+
+### Added
+
+- **`mcp-vet probe [options] <url | command...>`** — a runtime prober with two
+  new violation categories, reported in the same JSON + SARIF formats as the
+  static scan:
+  - **`json-schema-dialect` (WARN)** — calls `tools/list` and inspects every
+    tool's `inputSchema`/`outputSchema` (SEP-2106 lifts both to full JSON
+    Schema 2020-12). Flags an explicit draft-04/-06/-07 (or 2019-09) `$schema`
+    at high confidence, and — when `$schema` is absent — draft-only keyword
+    forms (`definitions`, `$ref: "#/definitions/…"`, boolean
+    `exclusiveMinimum`/`exclusiveMaximum`, array-form `items`, schema-form
+    `dependencies`) at medium confidence. The walker recurses only into schema
+    positions, so a *property* named `definitions` is never a false positive,
+    and an explicit 2020-12 `$schema` is trusted.
+  - **`requires-initialize-handshake` (ERROR)** — with
+    `--spec-version 2026-07-28`, makes a stateless first request (no
+    `initialize`; protocolVersion/clientInfo/capabilities travel in `_meta`
+    per the RC) and flags a server that rejects it or hangs. Cross-checked:
+    only emitted when the classic 2025-11-25 handshake path *does* work, so a
+    dead server is an operational error (exit 2), never a false violation.
+- **`--spec-version <2025-11-25|2026-07-28>`** (default `2025-11-25`) selects
+  the revision to vet against; `--timeout <ms>` bounds each request and doubles
+  as the hang-detection window; `--json` / `--sarif [file]` / `--fail-on` /
+  `--quiet` / `--color` work as in the scan.
+- **Runtime rules in SARIF** — probe rules join the driver metadata when they
+  fire (`ERROR` → `error`, `WARN` → `warning`); the static-scan SARIF keeps its
+  stable 9-rule shape.
+- **`test/probe-fixtures/`** — minimal real MCP servers used by 18 new tests:
+  `server-draft07.mjs` (explicit + inferable draft-07 tools, a modern 2020-12
+  tool, and a property literally named `definitions`), `server-requires-init.mjs`
+  (rejects pre-initialize requests with `-32002`), `server-stateless.mjs`
+  (2026-07-28-native, requires `_meta`, no initialize), and `server-http.mjs`
+  (Streamable HTTP, sessionful *and* stateless modes).
+- Verified against the official `@modelcontextprotocol/server-everything@2026.7.4`:
+  it answers stateless requests, but all of its tool schemas still declare
+  draft-07 — `probe` reports 14 true `json-schema-dialect` findings.
+
 ## [0.4.0]
 
 The community-feedback release — everything in it traces to reader comments on

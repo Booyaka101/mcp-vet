@@ -1,9 +1,10 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import chalk from 'chalk';
-import { Finding, Severity, ALL_PATTERN_IDS } from './types';
-import { RULES } from './rules';
+import { Finding, Severity, ALL_PATTERN_IDS, RuntimeRuleId } from './types';
+import { RULES, RUNTIME_RULES } from './rules';
 import { ScanResult } from './scanner';
+import type { ProbeResult } from './probe';
 import { SPEC_URL, SPEC_DATE, MANUAL_REVIEW, getVersion } from './constants';
 
 function makeChalk(color: boolean | undefined) {
@@ -164,8 +165,8 @@ export function toPublicFinding(f: Finding) {
   };
 }
 
-/** (c) Structured JSON array of all findings. */
-export function renderJson(result: ScanResult): string {
+/** (c) Structured JSON array of all findings (scan and probe share this shape). */
+export function renderJson(result: Pick<ScanResult, 'findings'>): string {
   return JSON.stringify(result.findings.map(toPublicFinding), null, 2);
 }
 
@@ -175,10 +176,10 @@ export function writeJson(result: ScanResult, outDir: string): string {
   return outPath;
 }
 
-/** (d) GitHub Actions native annotations. ::error for BREAKING, ::warning for DEPRECATED. */
+/** (d) GitHub Actions native annotations. ::error for BREAKING/ERROR, ::warning otherwise. */
 export function printGithubAnnotations(findings: Finding[]): void {
   for (const f of findings) {
-    const level = f.severity === 'BREAKING' ? 'error' : 'warning';
+    const level = f.severity === 'BREAKING' || f.severity === 'ERROR' ? 'error' : 'warning';
     const msg = `${f.patternId} - ${f.explanation}`.replace(/\r?\n/g, ' ');
     const col = f.column ? `,col=${f.column}` : '';
     console.log(`::${level} file=${f.file},line=${f.line}${col}::${msg}`);
@@ -186,13 +187,13 @@ export function printGithubAnnotations(findings: Finding[]): void {
 }
 
 function sarifLevel(sev: Severity): 'error' | 'warning' {
-  return sev === 'BREAKING' ? 'error' : 'warning';
+  return sev === 'BREAKING' || sev === 'ERROR' ? 'error' : 'warning';
 }
 
 /** (e) SARIF 2.1.0 for GitHub code scanning / other SARIF consumers. */
-export function renderSarif(result: ScanResult): string {
+export function renderSarif(result: Pick<ScanResult, 'findings'>): string {
   const cwd = process.cwd();
-  const rules = ALL_PATTERN_IDS.map((id) => {
+  const rules: object[] = ALL_PATTERN_IDS.map((id) => {
     const r = RULES[id];
     return {
       id,
@@ -204,6 +205,27 @@ export function renderSarif(result: ScanResult): string {
       properties: { severity: r.severity },
     };
   });
+  // Runtime-probe rules join the driver metadata only when they actually fired,
+  // so static-scan SARIF keeps its stable 9-rule shape.
+  const runtimeUsed = [
+    ...new Set(
+      result.findings
+        .map((f) => f.patternId)
+        .filter((id): id is RuntimeRuleId => id in RUNTIME_RULES),
+    ),
+  ];
+  for (const id of runtimeUsed) {
+    const r = RUNTIME_RULES[id];
+    rules.push({
+      id,
+      name: r.label.replace(/[^A-Za-z0-9]+/g, ''),
+      shortDescription: { text: r.label },
+      fullDescription: { text: r.explanation },
+      helpUri: r.docUrl,
+      defaultConfiguration: { level: sarifLevel(r.severity) },
+      properties: { severity: r.severity },
+    });
+  }
 
   const results = result.findings.map((f) => {
     // Prefer a cwd-relative posix uri; if the file lives outside cwd (relative
@@ -253,9 +275,53 @@ export function renderSarif(result: ScanResult): string {
   return JSON.stringify(sarif, null, 2);
 }
 
-export function writeSarif(result: ScanResult, outPath: string): string {
+export function writeSarif(result: Pick<ScanResult, 'findings'>, outPath: string): string {
   fs.writeFileSync(outPath, renderSarif(result), 'utf8');
   return outPath;
+}
+
+/** (f) Terminal report for `mcp-vet probe` — runtime violations on a live server. */
+export function reportProbeTerminal(result: ProbeResult, opts: TerminalOptions = {}): void {
+  const c = makeChalk(opts.color);
+  const { findings } = result;
+
+  console.log(
+    c.bold(`mcp-vet probe`) +
+      c.gray(
+        ` — ${result.target} · spec ${result.specVersion} · ${result.transport} · ${result.toolCount} tool(s) listed`,
+      ),
+  );
+  for (const n of result.notes) console.log(c.gray(`  ${n}`));
+
+  if (findings.length === 0) {
+    console.log(
+      c.green(
+        `✔ no runtime violations — ` +
+          (result.specVersion === '2026-07-28'
+            ? 'the server answers stateless 2026-07-28 requests and all tool schemas are JSON Schema 2020-12 compatible'
+            : 'all tool schemas are JSON Schema 2020-12 compatible'),
+      ),
+    );
+    return;
+  }
+
+  console.log('');
+  for (const f of findings) {
+    const sev = f.severity === 'ERROR' ? c.red.bold('ERROR') : c.yellow.bold('WARN');
+    console.log(`${sev}  ${c.bold(f.patternId)} ${c.gray(`[${f.confidence}]`)}`);
+    console.log(indent(f.explanation, '    '));
+    console.log(c.gray('    — evidence:'));
+    console.log(indent(f.before, '      '));
+    console.log(c.gray('    + recommended fix:'));
+    console.log(c.green(indent(f.after, '      ')));
+  }
+
+  console.log('');
+  const errors = findings.filter((f) => f.severity === 'ERROR').length;
+  const warns = findings.length - errors;
+  const summary = `${findings.length} violation(s): ${errors} ERROR, ${warns} WARN`;
+  console.log(errors > 0 ? c.red.bold(summary) : c.yellow.bold(summary));
+  console.log(c.gray(`See ${SPEC_URL}`));
 }
 
 function toPosix(p: string): string {

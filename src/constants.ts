@@ -6,6 +6,8 @@ export const SPEC_URL =
   'https://blog.modelcontextprotocol.io/posts/2026-07-28-release-candidate/';
 export const CHANGELOG_URL =
   'https://tokenmix.ai/blog/mcp-updates-changelog-every-protocol-change-2026';
+export const SEP_2106_URL = 'https://modelcontextprotocol.io/seps/2106-json-schema-2020-12';
+export const JSON_SCHEMA_2020_12 = 'https://json-schema.org/draft/2020-12/schema';
 
 /**
  * 2026-07-28 changes that are real but NOT reliably detectable by static token
@@ -16,7 +18,7 @@ export const MANUAL_REVIEW: string[] = [
   'the long-lived server→client SSE push channel is removed (a server may only send requests while handling one)',
   'Streamable HTTP now requires Mcp-Method and Mcp-Name headers that mirror the JSON-RPC body',
   'auth hardening: validate the RFC 9207 `iss` param, send OIDC `application_type`, bind tokens to the issuer',
-  'tool inputSchema/outputSchema may now be full JSON Schema 2020-12 (do not auto-dereference external $ref)',
+  'tool inputSchema/outputSchema may now be full JSON Schema 2020-12 (do not auto-dereference external $ref) — `mcp-vet probe <server>` checks the dialect of a running server',
 ];
 
 /** Resolve the package version from package.json, tolerating layout differences. */

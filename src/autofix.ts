@@ -1,5 +1,5 @@
-import * as fs from 'node:fs';
-import { Finding, PatternId } from './types';
+﻿import * as fs from 'node:fs';
+import { Finding, PatternId, ViolationId } from './types';
 
 /**
  * Rules whose fix is a safe, purely mechanical text substitution. Only the
@@ -30,8 +30,8 @@ export interface FixOptions {
   dryRun?: boolean;
 }
 
-export function isFixable(id: PatternId): boolean {
-  return FIXABLE.has(id);
+export function isFixable(id: ViolationId): boolean {
+  return FIXABLE.has(id as PatternId);
 }
 
 /**
@@ -100,9 +100,9 @@ export function applyFixes(findings: Finding[], opts: FixOptions = {}): FixResul
       continue;
     }
 
-    // Only count/return findings as fixed once the write actually succeeds — a
+    // Only count/return findings as fixed once the write actually succeeds â€” a
     // failed write (read-only file, EACCES) must not report the code as fixed.
-    const out = (hasBom ? '﻿' : '') + lines.join('\n');
+    const out = (hasBom ? 'ï»¿' : '') + lines.join('\n');
     try {
       fs.writeFileSync(absPath, out, 'utf8');
     } catch {

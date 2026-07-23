@@ -1,4 +1,4 @@
-import { PatternId, ALL_PATTERN_IDS } from './types';
+import { PatternId, ViolationId, ALL_PATTERN_IDS } from './types';
 
 const ALL = new Set(ALL_PATTERN_IDS);
 const DIRECTIVE_RE = /mcp-vet-disable-(file|next-line|line)\b([^\r\n]*)/g;
@@ -7,7 +7,7 @@ export interface Suppressions {
   fileDisabled: boolean;
   /** line (1-indexed) -> set of suppressed pattern IDs (empty set = all) */
   byLine: Map<number, Set<PatternId>>;
-  isSuppressed(line: number, id: PatternId): boolean;
+  isSuppressed(line: number, id: ViolationId): boolean;
 }
 
 function parseIds(trailing: string): Set<PatternId> {
@@ -59,11 +59,11 @@ export function parseSuppressions(lines: string[]): Suppressions {
   return {
     fileDisabled,
     byLine,
-    isSuppressed(line: number, id: PatternId): boolean {
+    isSuppressed(line: number, id: ViolationId): boolean {
       if (fileDisabled) return true;
       const ids = byLine.get(line);
       if (!ids) return false;
-      return ids.size === 0 || ids.has(id);
+      return ids.size === 0 || ids.has(id as PatternId);
     },
   };
 }

@@ -1,5 +1,5 @@
-import { Token, Finding, PatternId, Severity, Confidence } from './types';
-import { SPEC_URL } from './constants';
+import { Token, Finding, PatternId, RuntimeRuleId, Severity, Confidence } from './types';
+import { SPEC_URL, SEP_2106_URL } from './constants';
 
 interface RuleMeta {
   id: PatternId;
@@ -105,6 +105,43 @@ export const RULES: Record<PatternId, RuleMeta> = {
     explanation:
       'The logging capability is deprecated with a 12-month grace period; use stderr or OpenTelemetry.',
     after: "// 'logging' capability is deprecated (≥12-month grace). Use stderr or OpenTelemetry.",
+  },
+};
+
+export interface RuntimeRuleMeta {
+  id: RuntimeRuleId;
+  label: string;
+  severity: Severity;
+  explanation: string;
+  /** the recommended fix, rendered as the finding's `after` */
+  after: string;
+  docUrl: string;
+}
+
+/**
+ * Runtime-probe violation categories (`mcp-vet probe`). These are observed on a
+ * *running* server's wire behavior — they have no static-source signal.
+ */
+export const RUNTIME_RULES: Record<RuntimeRuleId, RuntimeRuleMeta> = {
+  'json-schema-dialect': {
+    id: 'json-schema-dialect',
+    label: 'pre-2020-12 JSON Schema dialect',
+    severity: 'WARN',
+    explanation:
+      'SEP-2106 (2026-07-28) lifts tool inputSchema/outputSchema to full JSON Schema 2020-12; this tool schema declares or uses an older draft (draft-04/-06/-07), which 2020-12 validators interpret differently or silently ignore (e.g. "definitions" instead of "$defs").',
+    after:
+      'Set $schema to https://json-schema.org/draft/2020-12/schema and replace "definitions" with "$defs". If using TypeScript SDK, upgrade to @modelcontextprotocol/server and configure zod-to-json-schema for draft 2020-12.',
+    docUrl: SEP_2106_URL,
+  },
+  'requires-initialize-handshake': {
+    id: 'requires-initialize-handshake',
+    label: 'requires the removed initialize handshake',
+    severity: 'ERROR',
+    explanation:
+      'The server rejected (or hung on) a stateless 2026-07-28-style first request that carries capabilities in _meta instead of an initialize handshake; 2026-07-28 clients will not be able to talk to it.',
+    after:
+      'Update your SDK to @modelcontextprotocol/server (the new 2026-07-28 package) and remove any initialize handler assumptions',
+    docUrl: SPEC_URL,
   },
 };
 

@@ -1,6 +1,16 @@
-export type Severity = 'BREAKING' | 'DEPRECATED';
+/**
+ * BREAKING/DEPRECATED are the static-scan severities; ERROR/WARN are the
+ * runtime-probe severities (`mcp-vet probe`). BREAKING and ERROR fail the
+ * build under `--fail-on breaking`; DEPRECATED and WARN only warn.
+ */
+export type Severity = 'BREAKING' | 'DEPRECATED' | 'ERROR' | 'WARN';
 
 export type Confidence = 'high' | 'medium' | 'low';
+
+/** MCP spec revisions `mcp-vet probe` can vet a running server against. */
+export type SpecVersion = '2025-11-25' | '2026-07-28';
+
+export const SPEC_VERSIONS: SpecVersion[] = ['2025-11-25', '2026-07-28'];
 
 export type PatternId =
   | 'MCP_SESSION_ID'
@@ -24,6 +34,21 @@ export const ALL_PATTERN_IDS: PatternId[] = [
   'SAMPLING_CAP',
   'LOGGING_CAP',
 ];
+
+/**
+ * Violations only detectable against a *running* server (`mcp-vet probe`),
+ * not by static source analysis. Kebab-case ids are deliberate — they are the
+ * wire-level category names, distinct from the static PatternId rule ids.
+ */
+export type RuntimeRuleId = 'json-schema-dialect' | 'requires-initialize-handshake';
+
+export const ALL_RUNTIME_RULE_IDS: RuntimeRuleId[] = [
+  'json-schema-dialect',
+  'requires-initialize-handshake',
+];
+
+/** Any violation id — static pattern or runtime probe category. */
+export type ViolationId = PatternId | RuntimeRuleId;
 
 /**
  * A normalized syntactic token emitted by a language analyzer. Every analyzer
@@ -71,7 +96,7 @@ export interface Finding {
   column?: number;
   /** 1-indexed end column, when known (for SARIF regions / editor selection) */
   endColumn?: number;
-  patternId: PatternId;
+  patternId: ViolationId;
   patternLabel: string;
   severity: Severity;
   confidence: Confidence;

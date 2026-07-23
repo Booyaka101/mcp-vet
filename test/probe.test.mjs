@@ -1,0 +1,341 @@
+// Tests for `mcp-vet probe` — the runtime prober behind the two 2026-07-28
+// wire-level checks: json-schema-dialect (SEP-2106) and
+// requires-initialize-handshake (stateless protocol readiness).
+//
+// The CLI is spawned ASYNC (never spawnSync) per LESSONS 2026-07-21: the HTTP
+// tests run a fixture server as a sibling process and must keep the event loop
+// free while the probe talks to it.
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
+
+const require = createRequire(import.meta.url);
+const here = dirname(fileURLToPath(import.meta.url));
+const repoRoot = join(here, '..');
+const cli = join(repoRoot, 'dist', 'cli.js');
+const fixtures = join(repoRoot, 'test', 'probe-fixtures');
+
+const { analyzeSchemaDialect } = require('../dist/schema-dialect.js');
+
+const BRIEF_DIALECT_FIX =
+  'Set $schema to https://json-schema.org/draft/2020-12/schema and replace "definitions" with "$defs". If using TypeScript SDK, upgrade to @modelcontextprotocol/server and configure zod-to-json-schema for draft 2020-12.';
+const BRIEF_HANDSHAKE_FIX =
+  'Update your SDK to @modelcontextprotocol/server (the new 2026-07-28 package) and remove any initialize handler assumptions';
+
+/** Run `mcp-vet probe <args>` asynchronously; resolve with status + output. */
+function runProbe(args) {
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, [cli, 'probe', '--no-color', ...args], {
+      encoding: 'utf8',
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (d) => (stdout += d));
+    child.stderr.on('data', (d) => (stderr += d));
+    child.on('close', (status) => resolve({ status, stdout, stderr }));
+  });
+}
+
+/** Probe with --json and parse the findings array printed to stdout. */
+async function runProbeJson(args) {
+  const res = await runProbe(['--json', ...args]);
+  let findings = [];
+  try {
+    findings = JSON.parse(res.stdout);
+  } catch {
+    /* leave [] — callers assert on it */
+  }
+  return { ...res, findings };
+}
+
+/** Start the HTTP fixture in `mode`; resolve with { url, kill } once listening. */
+function startHttpFixture(mode) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [join(fixtures, 'server-http.mjs'), mode]);
+    let out = '';
+    const timer = setTimeout(() => {
+      child.kill();
+      reject(new Error('HTTP fixture did not print PORT within 10 s'));
+    }, 10_000);
+    child.stdout.on('data', (d) => {
+      out += d;
+      const m = /PORT=(\d+)/.exec(out);
+      if (m) {
+        clearTimeout(timer);
+        resolve({ url: `http://127.0.0.1:${m[1]}`, kill: () => child.kill() });
+      }
+    });
+    child.on('exit', () => clearTimeout(timer));
+  });
+}
+
+const draft07 = join(fixtures, 'server-draft07.mjs');
+const requiresInit = join(fixtures, 'server-requires-init.mjs');
+const stateless = join(fixtures, 'server-stateless.mjs');
+
+// ---------------------------------------------------------------------------
+// Check 1 — json-schema-dialect
+// ---------------------------------------------------------------------------
+
+test('probe flags draft-07 tool schemas (explicit high + inferred medium), skips modern/edge tools', async () => {
+  const res = await runProbeJson([draft07]);
+  assert.equal(res.status, 0, `WARNs alone must not fail the default gate\n${res.stderr}`);
+  assert.equal(res.findings.length, 2, JSON.stringify(res.findings, null, 2));
+  for (const f of res.findings) {
+    assert.equal(f.patternId, 'json-schema-dialect');
+    assert.equal(f.severity, 'WARN');
+    assert.equal(f.after, BRIEF_DIALECT_FIX, 'fix message matches the brief verbatim');
+  }
+  const explicit = res.findings.find((f) => f.before.includes('lookup_user'));
+  assert.ok(explicit, 'explicit $schema draft-07 tool flagged');
+  assert.equal(explicit.confidence, 'high');
+  assert.ok(explicit.before.includes('draft-07'));
+  const inferred = res.findings.find((f) => f.before.includes('legacy_search'));
+  assert.ok(inferred, 'keyword-inferred draft-07 tool flagged');
+  assert.equal(inferred.confidence, 'medium');
+  assert.ok(inferred.before.includes('definitions'));
+  // modern 2020-12 tool and the property-literally-named-"definitions" tool stay clean
+  assert.ok(!res.findings.some((f) => f.before.includes('modern_find')));
+  assert.ok(!res.findings.some((f) => f.before.includes('edge_props')));
+});
+
+test('probe --fail-on any exits 1 on WARN-only findings', async () => {
+  const res = await runProbe(['--fail-on', 'any', draft07]);
+  assert.equal(res.status, 1);
+});
+
+test('probe --fail-on none always exits 0', async () => {
+  const res = await runProbe(['--fail-on', 'none', '--spec-version', '2026-07-28', requiresInit]);
+  assert.equal(res.status, 0);
+});
+
+// ---------------------------------------------------------------------------
+// Check 2 — requires-initialize-handshake (--spec-version 2026-07-28)
+// ---------------------------------------------------------------------------
+
+test('probe --spec-version 2026-07-28 flags a server that requires initialize (ERROR, exit 1)', async () => {
+  const res = await runProbeJson(['--spec-version', '2026-07-28', requiresInit]);
+  assert.equal(res.status, 1, `ERROR must fail the default gate\n${res.stderr}`);
+  assert.equal(res.findings.length, 1, JSON.stringify(res.findings, null, 2));
+  const f = res.findings[0];
+  assert.equal(f.patternId, 'requires-initialize-handshake');
+  assert.equal(f.severity, 'ERROR');
+  assert.equal(f.confidence, 'high');
+  assert.equal(f.after, BRIEF_HANDSHAKE_FIX, 'fix message matches the brief verbatim');
+  assert.ok(f.before.includes('rejected'), 'evidence records the stateless rejection');
+});
+
+test('the same server is CLEAN under the default 2025-11-25 spec (handshake is still legal there)', async () => {
+  const res = await runProbeJson([requiresInit]);
+  assert.equal(res.status, 0);
+  assert.equal(res.findings.length, 0, JSON.stringify(res.findings, null, 2));
+});
+
+test('a 2026-07-28-native stateless server probes clean under --spec-version 2026-07-28', async () => {
+  const res = await runProbeJson(['--spec-version', '2026-07-28', stateless]);
+  assert.equal(res.status, 0, res.stderr);
+  assert.equal(res.findings.length, 0, JSON.stringify(res.findings, null, 2));
+});
+
+test('a stateless-only server under the 2025-11-25 spec is an operational error (exit 2), not a violation', async () => {
+  const res = await runProbe([stateless]);
+  assert.equal(res.status, 2);
+  assert.ok(/initialize/.test(res.stderr), `stderr explains the failed handshake: ${res.stderr}`);
+});
+
+test('an unreachable target is an operational error (exit 2)', async () => {
+  const res = await runProbe(['http://127.0.0.1:9', '--timeout', '2000']);
+  assert.equal(res.status, 2);
+});
+
+// ---------------------------------------------------------------------------
+// Streamable HTTP transport
+// ---------------------------------------------------------------------------
+
+test('HTTP probe catches BOTH new categories on a legacy sessionful server', async () => {
+  const srv = await startHttpFixture('requires-init');
+  try {
+    const res = await runProbeJson(['--spec-version', '2026-07-28', srv.url]);
+    assert.equal(res.status, 1, res.stderr);
+    const ids = res.findings.map((f) => f.patternId).sort();
+    assert.deepEqual(ids, ['json-schema-dialect', 'requires-initialize-handshake']);
+  } finally {
+    srv.kill();
+  }
+});
+
+test('HTTP probe of a stateless 2026-07-28 server is clean', async () => {
+  const srv = await startHttpFixture('stateless');
+  try {
+    const res = await runProbeJson(['--spec-version', '2026-07-28', srv.url]);
+    assert.equal(res.status, 0, res.stderr);
+    assert.equal(res.findings.length, 0, JSON.stringify(res.findings, null, 2));
+  } finally {
+    srv.kill();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Report formats (JSON + SARIF carry the new categories)
+// ---------------------------------------------------------------------------
+
+test('probe --sarif emits SARIF 2.1.0 with both runtime rules and correct levels', async () => {
+  const out = mkdtempSync(join(tmpdir(), 'mcp-vet-probe-'));
+  const sarifPath = join(out, 'probe.sarif');
+  try {
+    const res = await runProbe([
+      '--spec-version',
+      '2026-07-28',
+      '--sarif',
+      sarifPath,
+      '--quiet',
+      draft07,
+    ]);
+    // draft07 fixture answers stateless requests, so only dialect WARNs fire
+    assert.equal(res.status, 0, res.stderr);
+    const sarif = JSON.parse(readFileSync(sarifPath, 'utf8'));
+    assert.equal(sarif.version, '2.1.0');
+    const run = sarif.runs[0];
+    const ruleIds = run.tool.driver.rules.map((r) => r.id);
+    assert.ok(ruleIds.includes('json-schema-dialect'), 'runtime rule joins driver metadata');
+    const results = run.results;
+    assert.ok(results.length >= 2);
+    for (const r of results) {
+      assert.equal(r.ruleId, 'json-schema-dialect');
+      assert.equal(r.level, 'warning', 'WARN maps to SARIF warning');
+    }
+  } finally {
+    rmSync(out, { recursive: true, force: true });
+  }
+});
+
+test('probe --sarif on a handshake violation maps ERROR to SARIF error level', async () => {
+  const out = mkdtempSync(join(tmpdir(), 'mcp-vet-probe-'));
+  const sarifPath = join(out, 'probe.sarif');
+  try {
+    const res = await runProbe([
+      '--spec-version',
+      '2026-07-28',
+      '--sarif',
+      sarifPath,
+      '--quiet',
+      requiresInit,
+    ]);
+    assert.equal(res.status, 1);
+    const sarif = JSON.parse(readFileSync(sarifPath, 'utf8'));
+    const results = sarif.runs[0].results;
+    assert.equal(results.length, 1);
+    assert.equal(results[0].ruleId, 'requires-initialize-handshake');
+    assert.equal(results[0].level, 'error', 'ERROR maps to SARIF error');
+  } finally {
+    rmSync(out, { recursive: true, force: true });
+  }
+});
+
+test('probe --json emits machine-readable findings with the documented shape', async () => {
+  const res = await runProbeJson(['--spec-version', '2026-07-28', requiresInit]);
+  const f = res.findings[0];
+  for (const key of ['file', 'line', 'patternId', 'severity', 'confidence', 'explanation', 'docUrl', 'before', 'after']) {
+    assert.ok(key in f, `finding has ${key}`);
+  }
+  assert.ok(f.file.includes('server-requires-init.mjs'), 'file records the probed target');
+});
+
+// ---------------------------------------------------------------------------
+// CLI guardrails
+// ---------------------------------------------------------------------------
+
+test('invalid --spec-version is an operational error (exit 2) naming the valid values', async () => {
+  const res = await runProbe(['--spec-version', '2024-01-01', draft07]);
+  assert.equal(res.status, 2);
+  assert.ok(res.stderr.includes('2025-11-25') && res.stderr.includes('2026-07-28'));
+});
+
+test('invalid --timeout is an operational error (exit 2)', async () => {
+  const res = await runProbe(['--timeout', 'soon', draft07]);
+  assert.equal(res.status, 2);
+});
+
+// ---------------------------------------------------------------------------
+// analyzeSchemaDialect unit coverage (the walker's precision guarantees)
+// ---------------------------------------------------------------------------
+
+test('analyzeSchemaDialect: explicit old drafts and 2019-09 are flagged; 2020-12 and unknown dialects are trusted', () => {
+  for (const [url, dialect] of [
+    ['http://json-schema.org/draft-04/schema#', 'draft-04'],
+    ['http://json-schema.org/draft-06/schema#', 'draft-06'],
+    ['http://json-schema.org/draft-07/schema#', 'draft-07'],
+    ['https://json-schema.org/draft-07/schema', 'draft-07'],
+    ['https://json-schema.org/draft/2019-09/schema', 'draft 2019-09'],
+  ]) {
+    const issue = analyzeSchemaDialect({ $schema: url, type: 'object' });
+    assert.ok(issue && issue.kind === 'explicit', url);
+    assert.equal(issue.dialect, dialect);
+  }
+  assert.equal(
+    analyzeSchemaDialect({ $schema: 'https://json-schema.org/draft/2020-12/schema', type: 'object' }),
+    null,
+  );
+  // a declared 2020-12 dialect is trusted even when old keywords linger
+  assert.equal(
+    analyzeSchemaDialect({
+      $schema: 'https://json-schema.org/draft/2020-12/schema',
+      type: 'object',
+      definitions: { X: { type: 'string' } },
+    }),
+    null,
+  );
+  assert.equal(analyzeSchemaDialect({ $schema: 'https://example.com/custom', type: 'object' }), null);
+});
+
+test('analyzeSchemaDialect: draft-07 keywords are inferred, including inside applicators', () => {
+  const nested = analyzeSchemaDialect({
+    type: 'object',
+    allOf: [{ definitions: { X: { type: 'string' } } }],
+  });
+  assert.ok(nested && nested.kind === 'inferred');
+  assert.ok(nested.keywords.some((k) => k.startsWith('definitions')));
+
+  const boolExcl = analyzeSchemaDialect({
+    type: 'object',
+    properties: { n: { type: 'number', minimum: 0, exclusiveMinimum: true } },
+  });
+  assert.ok(boolExcl && boolExcl.keywords.some((k) => k.includes('exclusiveMinimum')));
+
+  const arrayItems = analyzeSchemaDialect({
+    type: 'object',
+    properties: { t: { type: 'array', items: [{ type: 'string' }, { type: 'number' }] } },
+  });
+  assert.ok(arrayItems && arrayItems.keywords.some((k) => k.startsWith('array-form items')));
+
+  const refDefs = analyzeSchemaDialect({
+    type: 'object',
+    properties: { u: { $ref: '#/definitions/User' } },
+  });
+  assert.ok(refDefs && refDefs.keywords.some((k) => k.includes('#/definitions/')));
+});
+
+test('analyzeSchemaDialect: a *property* named "definitions" or modern schemas produce no issue', () => {
+  assert.equal(
+    analyzeSchemaDialect({
+      type: 'object',
+      properties: { definitions: { type: 'object' }, dependencies: { type: 'array' } },
+    }),
+    null,
+  );
+  assert.equal(
+    analyzeSchemaDialect({
+      type: 'object',
+      properties: { limit: { $ref: '#/$defs/Limit' } },
+      $defs: { Limit: { type: 'integer', exclusiveMinimum: 0 } },
+    }),
+    null,
+  );
+  assert.equal(analyzeSchemaDialect(undefined), null);
+  assert.equal(analyzeSchemaDialect('not-an-object'), null);
+});
