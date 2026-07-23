@@ -18,7 +18,7 @@ npx @booyaka/mcp-vet .
   <img src="https://raw.githubusercontent.com/Booyaka101/mcp-vet/main/assets/demo.png" alt="mcp-vet scanning a server — BREAKING and DEPRECATED findings with before/after fixes and confidence tags" width="720">
 </p>
 
-No account, no API key, no network calls — it parses your code locally (ts-morph for TS/JS, a bundled Python `ast` script for `.py`) and exits non-zero if it finds anything **BREAKING**, so you can drop it straight into CI.
+No account, no API key — the scan parses your code locally (ts-morph for TS/JS, a bundled Python `ast` script for `.py`), makes no network calls, and exits non-zero if it finds anything **BREAKING**, so you can drop it straight into CI. (The opt-in [`mcp-vet probe`](#vet-a-running-server-mcp-vet-probe) is the one command that talks to a server — and only the one you point it at.)
 
 ## What actually happens on July 28
 
