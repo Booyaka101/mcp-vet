@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, writeFileSync, rmSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync, rmSync, mkdirSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -352,6 +352,79 @@ test('SARIF output is valid 2.1.0 with rules and results', () => {
     assert.ok(['error', 'warning'].includes(r.level));
     assert.ok(r.locations[0].physicalLocation.region.startLine > 0);
   }
+});
+
+// ---------------------------------------------------------------------------
+// Adversarial suite: obfuscated usages — locks in hits AND documented misses
+// ---------------------------------------------------------------------------
+
+test('aliased TS imports are flagged at the import AND the aliased usage site', () => {
+  const { findings } = scanTarget('adversarial/caught/aliased-imports.ts');
+  const init = findings.filter((f) => f.patternId === 'INITIALIZE_HANDLER');
+  const list = findings.filter((f) => f.patternId === 'TASKS_LIST_REMOVED');
+  assert.equal(init.length, 2, `import + usage (got ${init.length})`);
+  assert.equal(list.length, 2, `import + usage (got ${list.length})`);
+});
+
+test('namespace-qualified SDK constants (types.InitializeRequestSchema) are flagged', () => {
+  const { findings } = scanTarget('adversarial/caught/namespace-import.ts');
+  assert.ok(findings.some((f) => f.patternId === 'INITIALIZE_HANDLER'));
+});
+
+test('Python import aliases are resolved (import line + usage site)', () => {
+  const { pythonAvailable } = require('../dist/py-analyzer.js');
+  if (!pythonAvailable()) return; // alias resolution needs the AST path
+  const { findings } = scanTarget('adversarial/caught/aliased_imports.py');
+  const roots = findings.filter((f) => f.patternId === 'ROOTS_CAP');
+  assert.equal(roots.length, 2, `import + usage (got ${roots.length})`);
+});
+
+test('client-side session ownership is flagged (TS); migrated/unrelated forms are not', () => {
+  const { findings } = scanTarget('adversarial/caught/client-session.ts');
+  const session = findings.filter((f) => f.patternId === 'MCP_SESSION_ID');
+  assert.equal(session.length, 2, `constructor sessionId + transport read (got ${session.length})`);
+  assert.ok(session.every((f) => f.confidence === 'medium'), 'client-session findings are medium');
+});
+
+test('client-side session ownership is flagged (Python); None/unrelated are not', () => {
+  const { pythonAvailable } = require('../dist/py-analyzer.js');
+  if (!pythonAvailable()) return; // needs the AST path for call/attribute context
+  const { findings } = scanTarget('adversarial/caught/client_session.py');
+  const session = findings.filter((f) => f.patternId === 'MCP_SESSION_ID');
+  assert.equal(session.length, 2, `kwarg + attribute read (got ${session.length})`);
+});
+
+test('known-miss adversarial fixtures produce zero findings (documented limitations)', () => {
+  const { findings } = scanTarget('adversarial/missed');
+  // If this ever fails because findings appeared, detection improved:
+  // move the fixture to caught/ and update README "Known limitations".
+  assert.equal(
+    findings.length,
+    0,
+    `expected 0, got ${JSON.stringify(findings.map((f) => `${f.file}:${f.line}:${f.patternId}`))}`,
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Conformance fixtures command
+// ---------------------------------------------------------------------------
+
+test('`mcp-vet fixtures <dir>` writes the conformance fixtures and checklist', () => {
+  const dir = join(mkdtempSync(join(tmpdir(), 'mcp-vet-conf-')), 'out');
+  const res = spawnSync('node', [cli, 'fixtures', dir], { encoding: 'utf8' });
+  assert.equal(res.status, 0, res.stderr);
+  const names = readdirSync(dir);
+  assert.equal(names.filter((n) => n.endsWith('.json')).length, 9, 'nine fixture files');
+  assert.ok(names.includes('CHECKLIST.md'));
+  const checklist = readFileSync(join(dir, 'CHECKLIST.md'), 'utf8');
+  assert.match(checklist, /2025-11-25/, 'dual-version matrix names the old revision');
+  assert.match(checklist, /not a switch/i, 'spec-date nuance is explicit');
+  const discover = JSON.parse(readFileSync(join(dir, '01-discover.json'), 'utf8'));
+  assert.equal(discover.steps[0].send.body.method, 'server/discover');
+  assert.equal(discover.steps[0].send.body.params._meta.protocolVersion, '2026-07-28');
+  const headers = JSON.parse(readFileSync(join(dir, '03-http-routing-headers.json'), 'utf8'));
+  assert.equal(headers.steps[0].send.headers['Mcp-Method'], 'tools/call');
+  rmSync(dirname(dir), { recursive: true, force: true });
 });
 
 // ---------------------------------------------------------------------------

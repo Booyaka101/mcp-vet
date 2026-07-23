@@ -16,6 +16,7 @@ import {
   renderJson,
 } from './reporters';
 import { applyFixes } from './autofix';
+import { emitConformanceFixtures } from './conformance';
 
 const CONF_VALUES: Confidence[] = ['high', 'medium', 'low'];
 const FAILON_VALUES: FailOn[] = ['breaking', 'any', 'none'];
@@ -54,6 +55,28 @@ function readIgnoreFile(dir: string): string[] {
   }
 }
 
+// `mcp-vet fixtures [dir]` — emit the protocol-level conformance fixtures that
+// pair with the static scan (runtime wire-contract checks a linter can't make).
+// Dispatched before commander so the scan pipeline stays untouched; a directory
+// literally named "fixtures" can still be scanned as `mcp-vet ./fixtures`.
+if (process.argv[2] === 'fixtures') {
+  const rawDir = process.argv[3];
+  const dir = path.resolve(
+    process.cwd(),
+    rawDir && !rawDir.startsWith('-') ? rawDir : 'mcp-vet-fixtures',
+  );
+  try {
+    const res = emitConformanceFixtures(dir);
+    console.log(`mcp-vet: wrote ${res.files.length} conformance file(s) to ${res.dir}`);
+    console.log(
+      'Replay them against your running server and work through CHECKLIST.md — including the dual-version (2025-11-25 + 2026-07-28) rollout matrix.',
+    );
+    process.exit(0);
+  } catch (err) {
+    fail(`could not write fixtures: ${(err as Error).message}`);
+  }
+}
+
 const program = new Command();
 
 program
@@ -89,6 +112,10 @@ program
   .option('--no-color', 'disable colored output')
   .option('--quiet', 'suppress the human-readable terminal report')
   .version(getVersion(), '-v, --version')
+  .addHelpText(
+    'after',
+    '\nCommands:\n  fixtures [dir]  write protocol-level conformance fixtures + CHECKLIST.md (default: ./mcp-vet-fixtures)',
+  )
   .showHelpAfterError();
 
 program.parse(process.argv);

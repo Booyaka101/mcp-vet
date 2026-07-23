@@ -281,6 +281,19 @@ export function applyRules(
       push('MCP_SESSION_ID', t, 'medium');
     }
 
+    // Rule 11 — client-side session ownership. A client transport constructed
+    // with a real sessionId / session_id, or a read of transport.sessionId,
+    // means the client still behaves as if it owns a session — which breaks
+    // against a stateless 2026-07-28 server even when the server scans clean.
+    if (
+      (t.kind === 'key' || t.kind === 'name') &&
+      (v === 'sessionId' || v === 'session_id') &&
+      t.clientSession &&
+      !t.benign
+    ) {
+      push('MCP_SESSION_ID', t, 'medium');
+    }
+
     // Rules 5-7 — deprecated capabilities.
     // High confidence when structurally inside a `capabilities` object (AST);
     // medium when only within 5 lines of a "capabilities" mention.

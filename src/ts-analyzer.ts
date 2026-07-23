@@ -41,6 +41,26 @@ function safePropName(node: Node): string | undefined {
   }
 }
 
+const TRANSPORTISH = /transport|client/i;
+
+/**
+ * Is `node` inside a call/constructor argument of something transport/client
+ * shaped (e.g. `new StreamableHTTPClientTransport(url, { sessionId })`)?
+ * Drives the client-side session-ownership check.
+ */
+function isClientTransportContext(node: Node): boolean {
+  let depth = 0;
+  for (const anc of node.getAncestors()) {
+    if (depth++ > 8) break;
+    const k = anc.getKind();
+    if (k === SyntaxKind.CallExpression || k === SyntaxKind.NewExpression) {
+      const expr = (anc as any).getExpression?.();
+      if (expr && TRANSPORTISH.test(expr.getText())) return true;
+    }
+  }
+  return false;
+}
+
 /** Is `node` structurally inside a `capabilities` object / call argument? */
 function isInCapabilities(node: Node): boolean {
   let depth = 0;
@@ -140,6 +160,21 @@ export function analyzeTs(absPath: string, text: string): Token[] {
     }
   };
 
+  // Aliased named imports (`import { InitializeRequestSchema as Init }`): map the
+  // local alias back to its canonical SDK name so *usage sites* are flagged too,
+  // not just the import line where the original identifier happens to appear.
+  const aliases = new Map<string, string>();
+  try {
+    for (const imp of sf.getImportDeclarations()) {
+      for (const spec of imp.getNamedImports()) {
+        const aliasNode = spec.getAliasNode();
+        if (aliasNode) aliases.set(aliasNode.getText(), spec.getName());
+      }
+    }
+  } catch {
+    /* ignore malformed imports */
+  }
+
   try {
     sf.forEachDescendant((node) => {
       const kind = node.getKind();
@@ -182,10 +217,31 @@ export function analyzeTs(absPath: string, text: string): Token[] {
 
       if (kind === SyntaxKind.Identifier) {
         const { line, col } = posOf(node);
-        tokens.push({ kind: 'name', value: node.getText(), line, col });
+        const text = node.getText();
+        tokens.push({ kind: 'name', value: text, line, col });
+        // An aliased identifier also counts as its canonical imported name —
+        // except inside the import specifier itself, where the original
+        // identifier is already present (avoids a duplicate import-line finding).
+        const original = aliases.get(text);
+        if (original && node.getParent()?.getKind() !== SyntaxKind.ImportSpecifier) {
+          tokens.push({ kind: 'name', value: original, line, col });
+        }
         return;
       }
     });
+
+    // Client-side session ownership: reads of `<transport>.sessionId` mean the
+    // client still behaves as if it owns a session against a stateless server.
+    for (const pae of sf.getDescendantsOfKind(SyntaxKind.PropertyAccessExpression)) {
+      try {
+        if (pae.getName() !== 'sessionId') continue;
+        if (!TRANSPORTISH.test(pae.getExpression().getText())) continue;
+        const { line, col } = posOf(pae.getNameNode());
+        tokens.push({ kind: 'name', value: 'sessionId', line, col, clientSession: true });
+      } catch {
+        /* ignore */
+      }
+    }
 
     // Object literal keys (roots:, "sampling":, logging shorthand, ...)
     const emitKey = (nameNode: Node, value: string, benign = false) => {
@@ -193,14 +249,20 @@ export function analyzeTs(absPath: string, text: string): Token[] {
       const tok: Token = { kind: 'key', value, line, col };
       if (CAP.has(value)) tok.inCapabilities = isInCapabilities(nameNode);
       if (benign) tok.benign = true;
+      // `sessionId` passed into a client transport constructor/factory = the
+      // client resuming/owning a session.
+      if (value === 'sessionId' && isClientTransportContext(nameNode)) {
+        tok.clientSession = true;
+      }
       tokens.push(tok);
     };
     for (const pa of sf.getDescendantsOfKind(SyntaxKind.PropertyAssignment)) {
       try {
         const name = pa.getName();
-        // `sessionIdGenerator: undefined` (or null) is the migrated, stateless form.
+        // `sessionIdGenerator: undefined` / `sessionId: undefined` (or null) is
+        // the migrated, stateless form.
         let benign = false;
-        if (name === 'sessionIdGenerator') {
+        if (name === 'sessionIdGenerator' || name === 'sessionId') {
           const init = pa.getInitializer()?.getText();
           benign = init === 'undefined' || init === 'null';
         }

@@ -26,6 +26,8 @@ export type { FixResult } from './autofix';
 export { renderJson, renderMarkdown, renderSarif, toPublicFinding } from './reporters';
 
 export { RULES } from './rules';
+export { CONFORMANCE_FIXTURES, emitConformanceFixtures } from './conformance';
+export type { ConformanceFixture, ConformanceStep, EmitResult } from './conformance';
 export { IgnoreMatcher } from './ignore';
 export { SPEC_URL, SPEC_DATE, CHANGELOG_URL, MANUAL_REVIEW, getVersion } from './constants';
 

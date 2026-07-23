@@ -1,0 +1,112 @@
+# Benchmark: corpus, methodology, and honest limits
+
+The README claims high precision on real MCP code. This file is the evidence
+behind that claim — corpus, pinned commits, counts, labels, and what the
+scanner is *known to miss* — so the claim is checkable rather than vibes.
+
+> Prompted by community feedback on the launch post: *"'0 false positives' is
+> encouraging but incomplete without corpus size, commit SHAs, labeled
+> negatives, and recall."* Correct. Here they are.
+
+## Corpus (pinned)
+
+Scanned with `mcp-vet` v0.4.0 (`node dist/cli.js <roots> --json`), all rules
+enabled, default confidence (`low`), on 2026-07-23:
+
+| Repo | Commit | Scanned root | Files | LOC |
+| --- | --- | --- | --- | --- |
+| [modelcontextprotocol/servers](https://github.com/modelcontextprotocol/servers) | `d31124c982401739917fd817c2a59db344529c16` | `src/` | 78 | 14,742 |
+| [modelcontextprotocol/typescript-sdk](https://github.com/modelcontextprotocol/typescript-sdk) | `1e1392e3f91583884fe82a0b4b91335875c3fba6` | `examples/` | 144 | 17,224 |
+| [modelcontextprotocol/python-sdk](https://github.com/modelcontextprotocol/python-sdk) | `3a6f2996cdd8358957479791e8b26198c07d6a75` | `examples/` | 225 | 12,013 |
+| **Total** | | | **447** | **43,979** |
+
+File counts are candidate files (`.ts/.tsx/.js/.mjs/.cjs/.py`) under the
+scanned roots, excluding `node_modules`.
+
+## Results
+
+**105 findings across 41 files** (TypeScript/JavaScript: 93, Python: 12).
+By confidence: 66 high, 38 medium, 1 low.
+
+| Pattern | Findings |
+| --- | --- |
+| `MCP_SESSION_ID` | 49 |
+| `LOGGING_CAP` | 17 |
+| `SAMPLING_CAP` | 16 |
+| `ROOTS_CAP` | 15 |
+| `INITIALIZE_HANDLER` | 4 |
+| `TASKS_LEGACY` | 2 |
+| `TASKS_RESULT_REMOVED` | 2 |
+
+### Labeling
+
+Every finding was manually reviewed against its source line:
+
+- **104 / 105 true positives** — real references to a removed or deprecated
+  protocol surface (session headers/ids, handshake registration, legacy task
+  methods, deprecated capability declarations and method strings).
+- **1 / 105 false positive (0.95%)** —
+  `stories/json_response/client.py:62` in the typescript-sdk examples:
+  `assert "mcp-session-id" not in response.headers`. That line is
+  *already-migrated* test code asserting the header is **absent**; flagging it
+  as "will break" is wrong. It is exactly what inline suppression
+  (`# mcp-vet-disable-line MCP_SESSION_ID`) is for, but we count it as a false
+  positive rather than defining it away. So the honest headline is
+  **"1 false positive in 44k LOC"**, not zero.
+
+Notes on reading the numbers:
+
+- Two occurrences on one line (e.g. `transport.sessionId && sessions.delete(transport.sessionId)`)
+  are reported as two findings — column-level dedup, not line-level.
+- Findings in test files (`__tests__/…`) are counted as true positives: a test
+  that registers `sampling/createMessage` breaks the same way production code
+  does.
+
+### Labeled negatives
+
+Files asserted to stay **clean** are part of the repo's test suite and run in CI:
+
+- `test/fixtures/clean/` — a full server written in the 2026-07-28 style
+  (per-request `_meta`, `sessionIdGenerator: undefined`, `-32602`).
+- `test/fixtures/negatives/` — "false friend" patterns: `sessionId` on plain
+  app-level objects, `-32002` inside strings/comments, capability-like words
+  with no capabilities context.
+- `test/fixtures/adversarial/caught/` — obfuscations the scanner **must**
+  catch: aliased imports (TS + Python), namespace-qualified SDK constants,
+  client transports resuming a `sessionId`.
+
+Additionally, in the corpus above, comment-only mentions (e.g. `Mcp-Session-Id`
+in a comment, `initialize` in prose) produced zero findings — the AST layer
+distinguishes executable tokens from comments by construction.
+
+## Recall — what the scanner is known to miss
+
+Static token analysis proves known patterns are **absent**; it cannot prove
+your server **speaks the new wire contract**. Recall is bounded by
+construction, and the misses are locked into the test suite
+(`test/fixtures/adversarial/missed/`, asserted to produce zero findings so any
+silent claim-inflation fails CI):
+
+- split/computed method strings — `'tasks' + '/list'`, `` `tasks/${op}` ``, f-strings
+- computed capability keys — `{ ['roo'+'ts']: {} }`
+- generated/loop-driven registration from string fragments
+- framework-adapter indirection (route tables built at runtime)
+- cross-module renames — a wrapper re-exporting an SDK constant under a new
+  name is flagged in the wrapper file, but a consumer importing only the new
+  name scans clean on its own
+
+There is no corpus-wide recall *percentage*: that would require a labeled set
+of every legacy usage in the wild, which nobody has. What we can say is: for
+the pattern shapes listed in the README, detection is exact; for the shapes
+above, it is zero, and the tool says so — pair the scan with runtime checks
+(`mcp-vet fixtures`) to cover the difference.
+
+## Reproducing
+
+```bash
+git clone --depth 1 https://github.com/modelcontextprotocol/servers
+git clone --depth 1 https://github.com/modelcontextprotocol/typescript-sdk
+git clone --depth 1 https://github.com/modelcontextprotocol/python-sdk
+# check out the pinned SHAs above, then:
+npx @booyaka/mcp-vet servers/src typescript-sdk/examples python-sdk/examples --json --no-files
+```

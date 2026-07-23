@@ -54,6 +54,13 @@ export interface Token {
    * e.g. `sessionIdGenerator: undefined`, the documented stateless migration.
    */
   benign?: boolean;
+  /**
+   * True when a `sessionId`/`session_id` token sits in *client-side* session
+   * ownership context — a client transport constructed with a session id, or a
+   * read of `transport.sessionId`. Client code that still owns a session breaks
+   * against a stateless server even when the server itself scans clean.
+   */
+  clientSession?: boolean;
 }
 
 export interface Finding {

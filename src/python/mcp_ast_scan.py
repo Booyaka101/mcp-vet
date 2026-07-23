@@ -23,7 +23,9 @@ CAP = {"roots", "sampling", "logging"}
 INIT_STRINGS = {"initialize", "notifications/initialized"}
 HANDLERISH = re.compile(r"handler|handle|register|route|request|notification|method|^on$", re.I)
 CAPS_RE = re.compile(r"capabilit", re.I)
+TRANSPORTISH = re.compile(r"transport|client", re.I)
 METHODISH = ("method", "type")
+SESSION_KWARGS = ("session_id", "sessionId")
 
 
 def _func_mentions_caps(func):
@@ -103,10 +105,40 @@ def _is_registration(node):
     return False
 
 
+def _func_name(func):
+    if isinstance(func, ast.Attribute):
+        return func.attr
+    if isinstance(func, ast.Name):
+        return func.id
+    return ""
+
+
+def _base_name(node):
+    """Leftmost usable name of an attribute chain (`transport.session_id` -> 'transport')."""
+    if isinstance(node, ast.Attribute):
+        return _base_name(node.value) or node.attr
+    if isinstance(node, ast.Name):
+        return node.id
+    return ""
+
+
+def _collect_aliases(tree):
+    """Map local alias -> canonical imported name, so `from mcp.types import
+    RootsCapability as RC` still flags `RC()` usage sites (and the import line)."""
+    aliases = {}
+    for n in ast.walk(tree):
+        if isinstance(n, (ast.Import, ast.ImportFrom)):
+            for a in n.names:
+                if a.asname and a.asname != a.name:
+                    aliases[a.asname] = a.name.rsplit(".", 1)[-1]
+    return aliases
+
+
 class Scanner:
-    def __init__(self, lines):
+    def __init__(self, lines, aliases=None):
         self.tokens = []
         self.lines = lines
+        self.aliases = aliases or {}
 
     def _col(self, node):
         c = getattr(node, "col_offset", None)
@@ -136,8 +168,24 @@ class Scanner:
             )
         elif isinstance(node, ast.Name):
             self.tokens.append({"kind": "name", "value": node.id, "line": node.lineno, "col": self._col(node)})
+            # An aliased identifier also counts as its canonical imported name.
+            original = self.aliases.get(node.id)
+            if original:
+                self.tokens.append({"kind": "name", "value": original, "line": node.lineno, "col": self._col(node)})
         elif isinstance(node, ast.Attribute):
-            self.tokens.append({"kind": "name", "value": node.attr, "line": node.lineno, "col": self._col(node)})
+            tok = {"kind": "name", "value": node.attr, "line": node.lineno, "col": self._col(node)}
+            # `transport.session_id` read = client-side session ownership.
+            if node.attr in SESSION_KWARGS and TRANSPORTISH.search(_base_name(node.value)):
+                tok["clientSession"] = True
+            self.tokens.append(tok)
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            # Surface imported names so `from mcp.types import X as Y` still
+            # flags the import line even though usages only say `Y`.
+            for a in node.names:
+                line = getattr(a, "lineno", None) or node.lineno
+                self.tokens.append(
+                    {"kind": "name", "value": a.name.rsplit(".", 1)[-1], "line": line, "col": self._col(a) or self._col(node)}
+                )
 
     def visit(self, node, in_caps):
         self.emit_for(node, in_caps)
@@ -168,6 +216,13 @@ class Scanner:
                     tok = {"kind": "key", "value": kw.arg, "line": line, "col": self._col(kw)}
                     if kw.arg in CAP:
                         tok["inCapabilities"] = caps_ctx
+                    # `session_id=` into a transport/client factory = the client
+                    # resuming/owning a session. `session_id=None` is migrated.
+                    if kw.arg in SESSION_KWARGS and TRANSPORTISH.search(_func_name(node.func)):
+                        if isinstance(kw.value, ast.Constant) and kw.value.value is None:
+                            tok["benign"] = True
+                        else:
+                            tok["clientSession"] = True
                     self.tokens.append(tok)
                 child_caps = caps_ctx or (kw.arg == "capabilities")
                 self.visit(kw.value, child_caps)
@@ -185,7 +240,7 @@ def scan_source(src):
     for n in ast.walk(tree):
         for c in ast.iter_child_nodes(n):
             c.parent = n
-    scanner = Scanner(src.split("\n"))
+    scanner = Scanner(src.split("\n"), _collect_aliases(tree))
     try:
         scanner.visit(tree, False)
     except RecursionError:

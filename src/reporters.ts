@@ -98,6 +98,11 @@ function printManualReview(c: any): void {
       `note: ${MANUAL_REVIEW.length} more 2026-07-28 changes need manual review (SSE push, required headers, auth, JSON Schema 2020-12) — see the README "Needs manual review" section.`,
     ),
   );
+  console.error(
+    c.gray(
+      'note: July 28 is a spec release, not a remote kill switch — breakage appears when a client/server pair negotiates the new revision. Test both 2025-11-25 and 2026-07-28 paths during rollout (`mcp-vet fixtures`).',
+    ),
+  );
 }
 
 function mdEscape(s: string): string {

@@ -4,6 +4,48 @@ All notable changes to `mcp-vet` are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0]
+
+The community-feedback release — everything in it traces to reader comments on
+the launch post (issues #1–#6). Static analysis got sharper, and the tool now
+ships the runtime half it was honest about not covering.
+
+### Added
+
+- **Client-side session-ownership detection** (#1) — a client transport
+  constructed with a real `sessionId`/`session_id` and reads of
+  `transport.sessionId` are flagged (`MCP_SESSION_ID`, medium). The migrated
+  `sessionId: undefined` / `session_id=None` forms are recognized as benign.
+  Servers going stateless is only half the migration; clients that still behave
+  as if they own a session break too.
+- **Aliased-import resolution** (#2) — `import { InitializeRequestSchema as Init }`
+  (TS) and `from mcp.types import RootsCapability as RC` (Python) now flag both
+  the import line and the aliased usage sites. Python import lines surface
+  imported names even when only the alias is used later.
+- **Adversarial regression suite** (#3) — `test/fixtures/adversarial/` locks in
+  what the scanner catches (`caught/`) *and* what it is known to miss
+  (`missed/`, asserted zero findings): computed strings, computed capability
+  keys, generated registration, framework adapters, cross-module renames.
+- **`mcp-vet fixtures [dir]`** (#4) — emits nine protocol-level conformance
+  fixtures + `CHECKLIST.md`: `server/discover`, per-request `_meta`,
+  `Mcp-Method`/`Mcp-Name` routing headers (incl. mismatch rejection), stateless
+  auth, task-handle lifecycle, duplicate deliveries, retry on another instance,
+  `tools/list` cache invalidation, and downgrade/refusal behavior. Also exported
+  programmatically (`CONFORMANCE_FIXTURES`, `emitConformanceFixtures`).
+- **BENCHMARK.md** (#5) — the precision claim is now evidence: pinned corpus
+  SHAs, 447 files / ~44k LOC, every finding labeled (105 findings, 104 TP,
+  1 FP), labeled negatives, and an explicit recall discussion.
+
+### Changed
+
+- **Docs: spec-date semantics** (#6) — July 28 is a specification release, not
+  a remote kill switch; breakage appears when a client/server pair negotiates
+  the new revision. README and the post-scan notice now say so, and recommend
+  the dual-version (2025-11-25 + 2026-07-28) rollout test matrix.
+- The README "0 false positives" claim is replaced by the measured, reproducible
+  numbers in BENCHMARK.md (1 FP in 44k LOC — an already-migrated negative
+  assertion in test code).
+
 ## [0.3.0]
 
 The completeness release — full detection coverage, a real migration path, and a

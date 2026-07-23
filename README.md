@@ -20,6 +20,17 @@ npx @booyaka/mcp-vet .
 
 No account, no API key, no network calls — it parses your code locally (ts-morph for TS/JS, a bundled Python `ast` script for `.py`) and exits non-zero if it finds anything **BREAKING**, so you can drop it straight into CI.
 
+## What actually happens on July 28
+
+**July 28 is a specification release date, not a switch that remotely disables your deployment.** Nothing reaches into running servers and turns them off. Breakage appears when a **client and server pair negotiates or requires the new revision** — a client that sends `2026-07-28`-style requests (per-request `_meta`, no handshake, routing headers) against a server that still expects `2025-11-25` semantics, or vice versa.
+
+Two practical consequences:
+
+- **Your rollout is a window, not a day.** Until every client you care about has moved, keep **both** revisions in your production test matrix: a `2025-11-25` path and a `2026-07-28` path. `mcp-vet fixtures` emits wire-level test fixtures for exactly this (see [Runtime conformance fixtures](#runtime-conformance-fixtures)).
+- **Silent acceptance is the worst failure mode.** A server that quietly processes an old-revision request under new semantics (or the reverse) corrupts behavior instead of failing loudly. Verify *refusal* behavior, not just the happy path.
+
+The scan tells you *what to change in your source*; the date tells you *when clients start expecting it*.
+
 ---
 
 ## Real-world example
@@ -53,7 +64,7 @@ Note it catches the `sessionIdGenerator` session usage — the real signal in SD
 
 | ID | Pattern |
 | --- | --- |
-| `MCP_SESSION_ID` | `Mcp-Session-Id` header / `mcpSessionId` variable |
+| `MCP_SESSION_ID` | `Mcp-Session-Id` header / `mcpSessionId` variable / client-side session ownership (`sessionId` passed to or read from a client transport) |
 | `INITIALIZE_HANDLER` | `initialize` / `notifications/initialized` handler registration |
 | `ERROR_CODE_32002` | the numeric error code `-32002` |
 | `TASKS_LEGACY` | `tasks/get` · `tasks/update` · `tasks/cancel` legacy method strings |
@@ -73,7 +84,7 @@ Note it catches the `sessionIdGenerator` session usage — the real signal in SD
 Every finding carries a **confidence** so you can tune signal-to-noise with `--min-confidence`:
 
 - **high** — exact/deterministic match (session id, `-32002`, tasks methods), a structurally-verified capability (the `roots`/`sampling`/`logging` key is really *inside* a `capabilities` object), or an `initialize` string used as a method name (handler registration, `switch` case, or `req.method === 'initialize'`).
-- **medium** — a `roots`/`sampling`/`logging` key/string within 5 lines of a `capabilities` mention but not structurally verified.
+- **medium** — a `roots`/`sampling`/`logging` key/string within 5 lines of a `capabilities` mention but not structurally verified; a real `sessionIdGenerator`; client-side session ownership (`sessionId`/`session_id` passed to or read from a transport/client).
 - **low** — a bare `'initialize'` string with no registration context.
 
 ---
@@ -95,6 +106,19 @@ function handle(req) {
   // route on meta, not on a session id
 }
 ```
+
+This cuts both ways — **client-side session ownership breaks too**, even against a server that scans clean. A lot of tool-reliability bugs only show up when the server is stateless but the client still behaves as if it owns a session:
+
+```ts
+// ❌ before — the client resumes a stored session
+const transport = new StreamableHTTPClientTransport(url, { sessionId: stored });
+persist(transport.sessionId);
+
+// ✅ after — stateless: no stored session id, full _meta on every request
+const transport = new StreamableHTTPClientTransport(url, { sessionId: undefined });
+```
+
+`mcp-vet` flags a client transport constructed with a real `sessionId`/`session_id` and reads of `transport.sessionId` (medium confidence). The migrated `sessionId: undefined` / `session_id=None` forms are recognized and left alone.
 
 ### 2. `initialize` / `notifications/initialized` — the handshake is removed
 
@@ -167,6 +191,28 @@ case 'tasks/list': return listTasks();
 
 The CLI prints a one-line reminder of these after every scan.
 
+## Runtime conformance fixtures
+
+Static analysis proves known legacy patterns are *absent* from your source. Only wire-level tests prove your running server actually *speaks* the 2026-07-28 contract. `mcp-vet` ships both halves:
+
+```bash
+npx @booyaka/mcp-vet fixtures ./mcp-fixtures
+```
+
+writes nine ready-to-fire JSON fixtures plus a `CHECKLIST.md`, covering the runtime behaviors a linter cannot see:
+
+1. `server/discover` replaces the initialize handshake
+2. per-request `_meta` (protocolVersion, clientInfo, capabilities) — including explicit refusal when `_meta` is missing
+3. `Mcp-Method` / `Mcp-Name` routing headers, including the header/body-mismatch rejection case
+4. stateless auth context (no session-bound token cache)
+5. task-handle lifecycle: creation, `tasks/get` polling, resume on another instance, `tasks/list` and `tasks/result` returning method-not-found
+6. duplicate request delivery (idempotency under retries)
+7. retry against a different server instance (no sticky in-memory state)
+8. `tools/list` cache invalidation
+9. downgrade/refusal: old-revision requests get an explicit error, never silent acceptance under the wrong semantics
+
+Each fixture is a plain JSON description (`send` headers + JSON-RPC body, `expect` notes) you can replay with curl, supertest, pytest + httpx, or any HTTP harness. The checklist also spells out the **dual-version rollout matrix** — run both `2025-11-25` and `2026-07-28` paths until your clients have all moved — and a **client-side assumptions** list (session resume, per-request `_meta`, retries landing on other instances, `tools/list` revalidation).
+
 ## Usage
 
 ```bash
@@ -174,6 +220,7 @@ npx @booyaka/mcp-vet [paths...]        # scan directories and/or files (default:
 npx @booyaka/mcp-vet . --fix           # scan, and auto-apply the mechanical -32002 → -32602 rewrite
 npx @booyaka/mcp-vet ./src ./packages  # multiple roots
 npx @booyaka/mcp-vet server.py         # a single file
+npx @booyaka/mcp-vet fixtures ./dir    # write runtime conformance fixtures + checklist (default: ./mcp-vet-fixtures)
 ```
 
 Globs `**/*.{ts,tsx,mts,cts,js,jsx,mjs,cjs}` and `**/*.py`, skipping `node_modules`, `.git`, `__pycache__`, `dist`, and `build`.
@@ -325,14 +372,24 @@ It matches the ways real servers are actually written, not just raw method strin
 - **SDK schema-constant registration** — `server.setRequestHandler(InitializeRequestSchema, …)` (how the official SDKs register handlers) maps `InitializeRequestSchema`, `ListRootsRequestSchema`, `CreateMessageRequestSchema`, `SetLevelRequestSchema`, `ListTasksRequestSchema`, `GetTaskResultRequestSchema`, … to the right rule.
 - **SDK capability constructors** — the Python SDK's `ClientCapabilities(roots=RootsCapability())` is recognized structurally (high confidence), and `RootsCapability` / `SamplingCapability` / `LoggingCapability` are matched directly.
 - **`sessionIdGenerator`** — flagged only when it's a real generator, not the migrated `sessionIdGenerator: undefined`.
+- **aliased imports** — `import { InitializeRequestSchema as Init }` (TS) and `from mcp.types import RootsCapability as RC` (Python) are resolved back to their canonical names, so both the import line and the aliased usage sites are flagged. Namespace access (`types.InitializeRequestSchema`) is matched too.
+- **client-side session ownership** — a client transport constructed with a real `sessionId`/`session_id`, or a read of `transport.sessionId`; the migrated `sessionId: undefined` / `session_id=None` forms are recognized as benign.
 
-Validated against a broad corpus of real MCP servers (the official reference servers, TS + Python): **0 false positives**.
+**Measured, not vibes:** scanned against the official MCP reference servers and both SDK example suites at pinned commits — 447 files / ~44k LOC — every finding manually labeled: **105 findings, 104 true positives, 1 false positive**. Corpus, commit SHAs, per-pattern counts, labeled negatives, and the recall discussion are in [BENCHMARK.md](./BENCHMARK.md).
 
 ### Known limitations
 
+These are locked into the test suite as `test/fixtures/adversarial/missed/` — fixtures asserted to produce **zero** findings, so the claims below can't silently rot in either direction:
+
+- **Split/computed method strings** — `"tasks" + "/list"`, `` `tasks/${op}` ``, or `f"tasks/{x}"` are not reconstructed.
+- **Computed capability keys** — `{ ['roo'+'ts']: {} }` never exists as a single token.
+- **Generated/loop-driven registration** — method tables assembled from string fragments at runtime.
+- **Framework-adapter indirection** — routes built dynamically (`app.post('/rpc/' + ns + '/' + action, ...)`).
+- **Cross-module renames** — a wrapper module re-exporting an SDK constant under a new name is flagged *in the wrapper file*, but a consumer importing only the new name scans clean on its own. Scan whole projects, not single files.
 - **Python SDK decorator/method registration** — a handler wired purely as `@server.list_roots()` or a bare `session.list_roots()` call (with no capability declaration or method string in the file) is not matched, to avoid false positives on generic method names. The capability declaration in the same server is normally caught.
-- **Split/computed method strings** — `"tasks" + "/list"` or `f"tasks/{x}"` are not reconstructed.
 - The **regex fallback** (no Python interpreter) covers only the deterministic rules at reduced precision; install Python for full `.py` fidelity.
+
+This is the recall boundary of static analysis: it proves known patterns are *absent*, not that the server *speaks the new wire contract*. Cover the difference with the [runtime conformance fixtures](#runtime-conformance-fixtures).
 
 ## Programmatic API
 
