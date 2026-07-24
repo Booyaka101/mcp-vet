@@ -4,7 +4,8 @@
 //     tools/list returns a DRAFT-07 tool (so an HTTP probe exercises BOTH new
 //     violation categories at once).
 //   node server-http.mjs stateless       — 2026-07-28 style: no initialize,
-//     _meta required, clean 2020-12 tool.
+//     namespaced _meta required, server/discover implemented, -32602 for
+//     unknown resources, clean 2020-12 tool.
 // Prints "PORT=<n>" on stdout once listening.
 import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
@@ -84,14 +85,38 @@ const server = createServer((req, res) => {
       return rpcError(-32601, 'Method not found');
     }
 
-    // stateless mode
+    // stateless mode — fully migrated: namespaced _meta required, server/discover
+    // implemented, nonexistent resources answered with the new -32602 code.
     if (msg.method === 'initialize')
       return rpcError(-32601, 'Method not found: initialize was removed in 2026-07-28');
+    const meta = msg.params && msg.params._meta;
+    if (
+      !meta ||
+      typeof meta !== 'object' ||
+      typeof meta['io.modelcontextprotocol/protocolVersion'] !== 'string' ||
+      typeof meta['io.modelcontextprotocol/clientCapabilities'] !== 'object'
+    ) {
+      return rpcError(-32602, 'missing _meta (protocolVersion + clientCapabilities)');
+    }
     if (msg.method === 'tools/list') {
-      if (!msg.params || typeof msg.params._meta !== 'object' || msg.params._meta === null) {
-        return rpcError(-32602, 'missing _meta');
-      }
       return json({ jsonrpc: '2.0', id: msg.id, result: { tools: [MODERN_TOOL] } });
+    }
+    if (msg.method === 'server/discover') {
+      return json({
+        jsonrpc: '2.0',
+        id: msg.id,
+        result: {
+          resultType: 'complete',
+          supportedVersions: ['2026-07-28'],
+          capabilities: { tools: {}, resources: {} },
+          serverInfo: { name: 'fixture-http-stateless', version: '2.0.0' },
+          ttlMs: 60000,
+          cacheScope: 'private',
+        },
+      });
+    }
+    if (msg.method === 'resources/read') {
+      return rpcError(-32602, `Invalid params: unknown resource ${msg.params.uri}`);
     }
     return rpcError(-32601, 'Method not found');
   });

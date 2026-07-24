@@ -215,18 +215,21 @@ Each fixture is a plain JSON description (`send` headers + JSON-RPC body, `expec
 
 ## Vet a running server (`mcp-vet probe`)
 
-Where the scan reads your *source*, `probe` talks to your *running server* over the wire — stdio (a command it spawns) or Streamable HTTP (a URL) — and checks the two 2026-07-28 violations that only exist at runtime:
+Where the scan reads your *source*, `probe` talks to your *running server* over the wire — stdio (a command it spawns) or Streamable HTTP (a URL) — and checks the 2026-07-28 violations that only exist at runtime (`run` is an alias: `mcp-vet run …` ≡ `mcp-vet probe …`):
 
 | ID | Severity | What it checks |
 | --- | --- | --- |
 | `json-schema-dialect` | 🟡 WARN | calls `tools/list` and inspects every tool's `inputSchema`/`outputSchema` for a pre-2020-12 JSON Schema dialect ([SEP-2106](https://modelcontextprotocol.io/seps/2106-json-schema-2020-12)) — an explicit draft-04/-06/-07 `$schema` (**high** confidence), or no `$schema` but draft-only keyword forms: `definitions` instead of `$defs`, `$ref: "#/definitions/…"`, boolean `exclusiveMinimum`/`exclusiveMaximum`, array-form `items` (**medium** confidence) |
-| `requires-initialize-handshake` | 🔴 ERROR | with `--spec-version 2026-07-28`: makes a **stateless first request** — no `initialize`, capabilities/clientInfo/protocolVersion in `_meta` per the RC — and flags a server that rejects it or hangs waiting for the removed handshake |
+| `requires-initialize-handshake` | 🔴 ERROR | with `--spec-version 2026-07-28`: makes a **stateless first request** — no `initialize`, protocolVersion/clientInfo/clientCapabilities in namespaced `_meta` keys per the RC — and flags a server that rejects it or hangs waiting for the removed handshake. A valid `tools` array in the answer is asserted, not just a 200 |
+| `missing-server-discover` | 🔴 ERROR | with `--spec-version 2026-07-28`: calls the **`server/discover`** RPC that every 2026-07-28 server MUST implement ([SEP-2575](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2575) — it replaces the handshake for up-front capability discovery) and flags a server whose answer is an error or lacks the required `capabilities` key. (The spec defines `server/discover` as JSON-RPC only — 2026-07-28 *removes* the HTTP GET endpoint, so there is no `GET /mcp/discover` to fall back to) |
+| `legacy-resource-error-code` | 🔴 ERROR | with `--spec-version 2026-07-28`: reads a deliberately nonexistent resource URI and flags a server that still answers with the MCP-custom **`-32002`** instead of the JSON-RPC standard **`-32602`** (Invalid Params). Servers without `resources/read` (`-32601`) are skipped, not flagged |
 
 ```bash
 # vet the schemas of a stdio server (spawns the command; a lone .js file runs with Node)
 npx @booyaka/mcp-vet probe node ./dist/server.js
 
-# full 2026-07-28 readiness: stateless first contact + schema dialects
+# full 2026-07-28 readiness: stateless first contact + server/discover +
+# resource error code + schema dialects
 npx @booyaka/mcp-vet probe --spec-version 2026-07-28 http://localhost:3000/mcp
 ```
 
@@ -234,21 +237,39 @@ npx @booyaka/mcp-vet probe --spec-version 2026-07-28 http://localhost:3000/mcp
 mcp-vet probe — node ./dist/server.js · spec 2026-07-28 · stdio · 12 tool(s) listed
   stateless probe: stateless tools/list was rejected: -32002 Server not initialized
   fallback probe: initialize handshake + tools/list succeeded
+  server/discover: rejected (-32601)
+  resource error-code check skipped — server does not implement resources/read (-32601)
 
 ERROR  requires-initialize-handshake [high]
     The server rejected (or hung on) a stateless 2026-07-28-style first request ...
+ERROR  missing-server-discover [high]
+    The 2026-07-28 spec requires every server to implement the server/discover RPC ...
 WARN   json-schema-dialect [high]
     tool "echo" inputSchema: $schema = http://json-schema.org/draft-07/schema# (draft-07)
 ```
 
-The stateless verdict is **cross-checked** before it becomes a violation: `requires-initialize-handshake` is only emitted when the classic `2025-11-25` handshake path *does* work — a dead or non-MCP server is an operational error (exit 2), never a false violation. The dialect walker recurses only into schema positions (applicators like `properties`/`allOf`), so a *property* literally named `definitions` is never mistaken for the draft-07 keyword, and an explicit 2020-12 `$schema` declaration is trusted.
+The stateless verdict is **cross-checked** before it becomes a violation: `requires-initialize-handshake` is only emitted when the classic `2025-11-25` handshake path *does* work — a dead or non-MCP server is an operational error (exit 2), never a false violation. The `server/discover` and error-code checks then run on whichever contact path succeeded, so even a handshake-only server gets its complete migration report in one probe. The dialect walker recurses only into schema positions (applicators like `properties`/`allOf`), so a *property* literally named `definitions` is never mistaken for the draft-07 keyword, and an explicit 2020-12 `$schema` declaration is trusted.
+
+### `--spec-version` — which revision to vet against
+
+| Value | Behavior |
+| --- | --- |
+| `2025-11-25` *(default)* | today's stable contract: classic `initialize` handshake, then the `json-schema-dialect` check. **No 2026-07-28 assertions run** — a fully 2025-era server probes clean |
+| `2026-07-28` | the full new-spec compliance suite: stateless first contact, required `server/discover`, `-32602` resource error code, plus the dialect check |
+
+**Migration note.** The default stays `2025-11-25` so existing CI invocations keep their exact behavior — add the flag when *you* are ready, not when the spec ships. A practical rollout:
+
+1. Today: `mcp-vet probe <server>` (unchanged) plus the static scan in CI.
+2. When you start migrating: add a second CI job with `--spec-version 2026-07-28 --fail-on none` to *see* the new-spec violations without failing the build.
+3. When your server targets `2026-07-28` (e.g. after moving to `@modelcontextprotocol/server` 2.x): drop `--fail-on none` so the three ERROR-level checks gate the build. A correctly migrated server passes all of them; the pre-migration server fails `requires-initialize-handshake` and `missing-server-discover` immediately.
+4. Keep a `2025-11-25` probe in the matrix until every client you serve has moved (the rollout is a window, not a day — see [What actually happens on July 28](#what-actually-happens-on-july-28)).
 
 Probe findings use the same report formats as the scan: `--json` (machine-readable array on stdout) and `--sarif [file]` (SARIF 2.1.0 — `ERROR` maps to `error`, `WARN` to `warning`), plus `--fail-on breaking|any|none` (default `breaking`: exit 1 only on `ERROR`), `--timeout <ms>` (default 8000, also the hang-detection window), `--quiet`, and `--color`/`--no-color`.
 
-Try it against the official reference server — the July 2026 `@modelcontextprotocol/server-everything` answers stateless requests, but its tool schemas still declare draft-07, and `probe` catches all of them:
+Try it against the official reference server — the July 2026 `@modelcontextprotocol/server-everything` (beta 2026-07-28 SDK) answers stateless requests and already returns the new `-32602` resource error code, but it does not implement `server/discover` yet and its tool schemas still declare draft-07 — `probe` reports exactly that (1 ERROR, 13 WARN):
 
 ```bash
-npx @booyaka/mcp-vet probe --spec-version 2026-07-28 npx -y mcp-server-everything stdio
+npx @booyaka/mcp-vet probe --spec-version 2026-07-28 npx -y @modelcontextprotocol/server-everything stdio
 ```
 
 ## Usage
@@ -259,7 +280,7 @@ npx @booyaka/mcp-vet . --fix           # scan, and auto-apply the mechanical -32
 npx @booyaka/mcp-vet ./src ./packages  # multiple roots
 npx @booyaka/mcp-vet server.py         # a single file
 npx @booyaka/mcp-vet fixtures ./dir    # write runtime conformance fixtures + checklist (default: ./mcp-vet-fixtures)
-npx @booyaka/mcp-vet probe <url|cmd>   # vet a RUNNING server's wire behavior (see section above)
+npx @booyaka/mcp-vet probe <url|cmd>   # vet a RUNNING server's wire behavior (see section above; alias: run)
 ```
 
 Globs `**/*.{ts,tsx,mts,cts,js,jsx,mjs,cjs}` and `**/*.py`, skipping `node_modules`, `.git`, `__pycache__`, `dist`, and `build`.
@@ -465,10 +486,10 @@ Also exported: `renderJson` / `renderMarkdown` / `renderSarif`, `RULES`, and the
 ```bash
 npm install      # installs deps and builds (via prepare)
 npm run build    # tsc -> dist/ + copies the Python script
-npm test         # builds, then runs the Node.js built-in test runner (55 tests)
+npm test         # builds, then runs the Node.js built-in test runner (62 tests)
 ```
 
-Test fixtures live in `test/fixtures/` (dirty TS + Python servers, a `clean/` server with zero violations, `negatives/` true-negatives, a `confidence/` gradient, and `suppress/` cases). Runtime-probe fixtures live in `test/probe-fixtures/` — minimal stdio + Streamable-HTTP MCP servers: one returning draft-07 schemas, one requiring the initialize handshake, and one fully stateless 2026-07-28-native.
+Test fixtures live in `test/fixtures/` (dirty TS + Python servers, a `clean/` server with zero violations, `negatives/` true-negatives, a `confidence/` gradient, and `suppress/` cases). Runtime-probe fixtures live in `test/probe-fixtures/` — minimal stdio + Streamable-HTTP MCP servers: one returning draft-07 schemas, one requiring the initialize handshake, one fully migrated 2026-07-28-native (stateless + `server/discover` + `-32602`), and a `server-partial.mjs` with one deliberate migration defect per mode (`legacy-error-code` / `no-discover` / `bad-discover`).
 
 ## License
 

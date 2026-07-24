@@ -2,8 +2,10 @@
 // JSON Schemas — one explicit ($schema declared), one inferable (no $schema but
 // draft-07 keywords), one fully modern 2020-12 tool, and one edge case whose
 // *property* is literally named "definitions" (must NOT be flagged).
-// It answers tools/list with or without an initialize handshake, so it can be
-// probed under both --spec-version values.
+// It answers tools/list with or without an initialize handshake, implements
+// server/discover, and returns -32602 for unknown resources, so it can be
+// probed under both --spec-version values and its ONLY violations are the
+// dialect WARNs.
 import { createInterface } from 'node:readline';
 
 const TOOLS = [
@@ -80,5 +82,18 @@ createInterface({ input: process.stdin }).on('line', (line) => {
     });
   }
   if (msg.method === 'tools/list') return reply(msg.id, { tools: TOOLS });
+  if (msg.method === 'server/discover') {
+    return reply(msg.id, {
+      resultType: 'complete',
+      supportedVersions: ['2025-11-25', '2026-07-28'],
+      capabilities: { tools: {} },
+      serverInfo: { name: 'fixture-draft07', version: '1.0.0' },
+      ttlMs: 60000,
+      cacheScope: 'private',
+    });
+  }
+  if (msg.method === 'resources/read') {
+    return replyError(msg.id, -32602, `Invalid params: unknown resource ${msg.params?.uri}`);
+  }
   replyError(msg.id, -32601, 'Method not found');
 });

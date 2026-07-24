@@ -40,11 +40,17 @@ export const ALL_PATTERN_IDS: PatternId[] = [
  * not by static source analysis. Kebab-case ids are deliberate — they are the
  * wire-level category names, distinct from the static PatternId rule ids.
  */
-export type RuntimeRuleId = 'json-schema-dialect' | 'requires-initialize-handshake';
+export type RuntimeRuleId =
+  | 'json-schema-dialect'
+  | 'requires-initialize-handshake'
+  | 'missing-server-discover'
+  | 'legacy-resource-error-code';
 
 export const ALL_RUNTIME_RULE_IDS: RuntimeRuleId[] = [
   'json-schema-dialect',
   'requires-initialize-handshake',
+  'missing-server-discover',
+  'legacy-resource-error-code',
 ];
 
 /** Any violation id — static pattern or runtime probe category. */

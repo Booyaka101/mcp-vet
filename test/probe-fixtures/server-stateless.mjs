@@ -1,7 +1,9 @@
-// Probe fixture: a fully 2026-07-28-native stateless MCP stdio server.
-// It has NO initialize handler (that method is removed) and it *requires* the
-// per-request _meta (protocolVersion/clientInfo/capabilities) — which also
-// proves the prober actually sends a well-formed stateless first request.
+// Probe fixture: a fully 2026-07-28-native stateless MCP stdio server — the
+// "correctly migrated" reference. It has NO initialize handler (that method is
+// removed), *requires* the namespaced per-request _meta keys (which proves the
+// prober sends a well-formed stateless request with the RC's exact key names),
+// implements the required server/discover RPC (SEP-2575), and answers a read of
+// a nonexistent resource with the new -32602 code (was -32002).
 // Tool schemas are clean 2020-12 → probing it must produce zero violations.
 import { createInterface } from 'node:readline';
 
@@ -23,11 +25,24 @@ const TOOLS = [
   },
 ];
 
+const RESOURCES = { 'demo://users/readme': 'known resource' };
+
 function reply(id, result) {
   process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id, result }) + '\n');
 }
 function replyError(id, code, message) {
   process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id, error: { code, message } }) + '\n');
+}
+
+/** 2026-07-28: every request must carry the namespaced _meta keys. */
+function hasStatelessMeta(msg) {
+  const meta = msg.params?._meta;
+  return (
+    meta &&
+    typeof meta === 'object' &&
+    typeof meta['io.modelcontextprotocol/protocolVersion'] === 'string' &&
+    typeof meta['io.modelcontextprotocol/clientCapabilities'] === 'object'
+  );
 }
 
 createInterface({ input: process.stdin }).on('line', (line) => {
@@ -41,11 +56,35 @@ createInterface({ input: process.stdin }).on('line', (line) => {
   if (msg.method === 'initialize') {
     return replyError(msg.id, -32601, 'Method not found: initialize was removed in 2026-07-28');
   }
+  if (!hasStatelessMeta(msg)) {
+    return replyError(
+      msg.id,
+      -32602,
+      'missing _meta (io.modelcontextprotocol/protocolVersion + clientCapabilities)',
+    );
+  }
   if (msg.method === 'tools/list') {
-    if (!msg.params || typeof msg.params._meta !== 'object' || msg.params._meta === null) {
-      return replyError(msg.id, -32602, 'missing _meta (protocolVersion/clientInfo/capabilities)');
-    }
     return reply(msg.id, { tools: TOOLS });
+  }
+  if (msg.method === 'server/discover') {
+    return reply(msg.id, {
+      resultType: 'complete',
+      supportedVersions: ['2026-07-28'],
+      capabilities: { tools: {}, resources: {} },
+      serverInfo: { name: 'fixture-stateless', version: '2.0.0' },
+      ttlMs: 60000,
+      cacheScope: 'private',
+    });
+  }
+  if (msg.method === 'resources/read') {
+    const uri = msg.params?.uri;
+    if (typeof uri !== 'string' || !(uri in RESOURCES)) {
+      return replyError(msg.id, -32602, `Invalid params: unknown resource ${uri}`);
+    }
+    return reply(msg.id, {
+      resultType: 'complete',
+      contents: [{ uri, mimeType: 'text/plain', text: RESOURCES[uri] }],
+    });
   }
   replyError(msg.id, -32601, 'Method not found');
 });

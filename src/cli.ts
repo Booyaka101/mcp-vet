@@ -79,9 +79,10 @@ if (process.argv[2] === 'fixtures') {
 }
 
 // `mcp-vet probe [options] <url | command...>` — connect to a RUNNING server and
-// vet its wire behavior (JSON Schema dialect, stateless-protocol readiness).
+// vet its wire behavior (JSON Schema dialect, stateless-protocol readiness,
+// server/discover, resource error code). `run` is an alias for `probe`.
 // Async, so the scan pipeline only runs in the else-branch.
-if (process.argv[2] === 'probe') {
+if (process.argv[2] === 'probe' || process.argv[2] === 'run') {
   runProbeCli(process.argv.slice(3)).then(
     (code) => process.exit(code),
     (err) => fail((err as Error).message),
@@ -132,8 +133,9 @@ function scanMain(): void {
         '',
         'Commands:',
         '  fixtures [dir]                 write protocol-level conformance fixtures + CHECKLIST.md (default: ./mcp-vet-fixtures)',
-        '  probe [options] <url|command>  connect to a RUNNING server and vet its wire behavior',
-        '                                 (JSON Schema 2020-12 dialect; with --spec-version 2026-07-28, stateless readiness)',
+        '  probe [options] <url|command>  connect to a RUNNING server and vet its wire behavior (alias: run)',
+        '                                 (JSON Schema 2020-12 dialect; with --spec-version 2026-07-28, also stateless',
+        '                                 readiness, the required server/discover RPC, and the -32602 resource error code)',
       ].join('\n'),
     )
     .showHelpAfterError();

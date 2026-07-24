@@ -1,6 +1,8 @@
-// Tests for `mcp-vet probe` — the runtime prober behind the two 2026-07-28
-// wire-level checks: json-schema-dialect (SEP-2106) and
-// requires-initialize-handshake (stateless protocol readiness).
+// Tests for `mcp-vet probe` — the runtime prober behind the four 2026-07-28
+// wire-level checks: json-schema-dialect (SEP-2106), requires-initialize-
+// handshake (stateless protocol readiness), missing-server-discover (the
+// required server/discover RPC, SEP-2575), and legacy-resource-error-code
+// (-32002 → -32602).
 //
 // The CLI is spawned ASYNC (never spawnSync) per LESSONS 2026-07-21: the HTTP
 // tests run a fixture server as a sibling process and must keep the event loop
@@ -27,10 +29,10 @@ const BRIEF_DIALECT_FIX =
 const BRIEF_HANDSHAKE_FIX =
   'Update your SDK to @modelcontextprotocol/server (the new 2026-07-28 package) and remove any initialize handler assumptions';
 
-/** Run `mcp-vet probe <args>` asynchronously; resolve with status + output. */
-function runProbe(args) {
+/** Run `mcp-vet <subcommand> <args>` asynchronously; resolve with status + output. */
+function runCli(subcommand, args) {
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, [cli, 'probe', '--no-color', ...args], {
+    const child = spawn(process.execPath, [cli, subcommand, '--no-color', ...args], {
       encoding: 'utf8',
     });
     let stdout = '';
@@ -39,6 +41,11 @@ function runProbe(args) {
     child.stderr.on('data', (d) => (stderr += d));
     child.on('close', (status) => resolve({ status, stdout, stderr }));
   });
+}
+
+/** Run `mcp-vet probe <args>` asynchronously; resolve with status + output. */
+function runProbe(args) {
+  return runCli('probe', args);
 }
 
 /** Probe with --json and parse the findings array printed to stdout. */
@@ -77,6 +84,7 @@ function startHttpFixture(mode) {
 const draft07 = join(fixtures, 'server-draft07.mjs');
 const requiresInit = join(fixtures, 'server-requires-init.mjs');
 const stateless = join(fixtures, 'server-stateless.mjs');
+const partial = join(fixtures, 'server-partial.mjs');
 
 // ---------------------------------------------------------------------------
 // Check 1 — json-schema-dialect
@@ -121,13 +129,18 @@ test('probe --fail-on none always exits 0', async () => {
 test('probe --spec-version 2026-07-28 flags a server that requires initialize (ERROR, exit 1)', async () => {
   const res = await runProbeJson(['--spec-version', '2026-07-28', requiresInit]);
   assert.equal(res.status, 1, `ERROR must fail the default gate\n${res.stderr}`);
-  assert.equal(res.findings.length, 1, JSON.stringify(res.findings, null, 2));
-  const f = res.findings[0];
-  assert.equal(f.patternId, 'requires-initialize-handshake');
+  // a 2025-era server misses the handshake removal AND the required
+  // server/discover RPC — the probe reports the complete migration picture
+  assert.equal(res.findings.length, 2, JSON.stringify(res.findings, null, 2));
+  const f = res.findings.find((x) => x.patternId === 'requires-initialize-handshake');
+  assert.ok(f, 'requires-initialize-handshake finding present');
   assert.equal(f.severity, 'ERROR');
   assert.equal(f.confidence, 'high');
   assert.equal(f.after, BRIEF_HANDSHAKE_FIX, 'fix message matches the brief verbatim');
   assert.ok(f.before.includes('rejected'), 'evidence records the stateless rejection');
+  const d = res.findings.find((x) => x.patternId === 'missing-server-discover');
+  assert.ok(d, 'missing-server-discover finding present');
+  assert.equal(d.severity, 'ERROR');
 });
 
 test('the same server is CLEAN under the default 2025-11-25 spec (handshake is still legal there)', async () => {
@@ -136,7 +149,21 @@ test('the same server is CLEAN under the default 2025-11-25 spec (handshake is s
   assert.equal(res.findings.length, 0, JSON.stringify(res.findings, null, 2));
 });
 
-test('a 2026-07-28-native stateless server probes clean under --spec-version 2026-07-28', async () => {
+test('a correctly migrated 2026-07-28 server passes ALL checks (stateless, discover, error code)', async () => {
+  const res = await runProbe(['--spec-version', '2026-07-28', stateless]);
+  assert.equal(res.status, 0, res.stderr);
+  assert.ok(
+    res.stdout.includes('server/discover: capabilities advertised'),
+    `discover check ran and passed:\n${res.stdout}`,
+  );
+  assert.ok(
+    res.stdout.includes('resource error code: -32602'),
+    `error-code check ran and passed:\n${res.stdout}`,
+  );
+  assert.ok(/no runtime violations/.test(res.stdout), res.stdout);
+});
+
+test('the same migrated server emits zero findings as JSON', async () => {
   const res = await runProbeJson(['--spec-version', '2026-07-28', stateless]);
   assert.equal(res.status, 0, res.stderr);
   assert.equal(res.findings.length, 0, JSON.stringify(res.findings, null, 2));
@@ -157,13 +184,17 @@ test('an unreachable target is an operational error (exit 2)', async () => {
 // Streamable HTTP transport
 // ---------------------------------------------------------------------------
 
-test('HTTP probe catches BOTH new categories on a legacy sessionful server', async () => {
+test('HTTP probe catches all violation categories on a legacy sessionful server', async () => {
   const srv = await startHttpFixture('requires-init');
   try {
     const res = await runProbeJson(['--spec-version', '2026-07-28', srv.url]);
     assert.equal(res.status, 1, res.stderr);
     const ids = res.findings.map((f) => f.patternId).sort();
-    assert.deepEqual(ids, ['json-schema-dialect', 'requires-initialize-handshake']);
+    assert.deepEqual(ids, [
+      'json-schema-dialect',
+      'missing-server-discover',
+      'requires-initialize-handshake',
+    ]);
   } finally {
     srv.kill();
   }
@@ -229,9 +260,11 @@ test('probe --sarif on a handshake violation maps ERROR to SARIF error level', a
     assert.equal(res.status, 1);
     const sarif = JSON.parse(readFileSync(sarifPath, 'utf8'));
     const results = sarif.runs[0].results;
-    assert.equal(results.length, 1);
-    assert.equal(results[0].ruleId, 'requires-initialize-handshake');
-    assert.equal(results[0].level, 'error', 'ERROR maps to SARIF error');
+    const ids = results.map((r) => r.ruleId).sort();
+    assert.deepEqual(ids, ['missing-server-discover', 'requires-initialize-handshake']);
+    for (const r of results) {
+      assert.equal(r.level, 'error', 'ERROR maps to SARIF error');
+    }
   } finally {
     rmSync(out, { recursive: true, force: true });
   }
@@ -244,6 +277,64 @@ test('probe --json emits machine-readable findings with the documented shape', a
     assert.ok(key in f, `finding has ${key}`);
   }
   assert.ok(f.file.includes('server-requires-init.mjs'), 'file records the probed target');
+});
+
+// ---------------------------------------------------------------------------
+// Checks 3 & 4 — missing-server-discover and legacy-resource-error-code
+// (each server-partial.mjs mode has exactly ONE migration defect)
+// ---------------------------------------------------------------------------
+
+test('a server still returning -32002 for a missing resource is flagged (legacy-resource-error-code)', async () => {
+  const res = await runProbeJson(['--spec-version', '2026-07-28', partial, 'legacy-error-code']);
+  assert.equal(res.status, 1, res.stderr);
+  assert.equal(res.findings.length, 1, JSON.stringify(res.findings, null, 2));
+  const f = res.findings[0];
+  assert.equal(f.patternId, 'legacy-resource-error-code');
+  assert.equal(f.severity, 'ERROR');
+  assert.equal(f.confidence, 'high');
+  assert.ok(f.before.includes('-32002'), 'evidence records the legacy code');
+});
+
+test('a server without server/discover is flagged (missing-server-discover)', async () => {
+  const res = await runProbeJson(['--spec-version', '2026-07-28', partial, 'no-discover']);
+  assert.equal(res.status, 1, res.stderr);
+  assert.equal(res.findings.length, 1, JSON.stringify(res.findings, null, 2));
+  const f = res.findings[0];
+  assert.equal(f.patternId, 'missing-server-discover');
+  assert.equal(f.severity, 'ERROR');
+  assert.ok(f.before.includes('rejected'), 'evidence records the -32601 rejection');
+});
+
+test('a server/discover result WITHOUT a capabilities key is flagged too', async () => {
+  const res = await runProbeJson(['--spec-version', '2026-07-28', partial, 'bad-discover']);
+  assert.equal(res.status, 1, res.stderr);
+  assert.equal(res.findings.length, 1, JSON.stringify(res.findings, null, 2));
+  const f = res.findings[0];
+  assert.equal(f.patternId, 'missing-server-discover');
+  assert.ok(f.before.includes('capabilities'), 'evidence names the missing key');
+});
+
+test('the new checks are GATED behind --spec-version 2026-07-28 (default probe stays clean)', async () => {
+  // Same defective server, default 2025-11-25 spec: existing behavior unchanged.
+  const res = await runProbeJson([partial, 'legacy-error-code']);
+  assert.equal(res.status, 0, res.stderr);
+  assert.equal(res.findings.length, 0, JSON.stringify(res.findings, null, 2));
+});
+
+// ---------------------------------------------------------------------------
+// `run` alias
+// ---------------------------------------------------------------------------
+
+test('`mcp-vet run` is an alias for probe (migrated server passes, exit 0)', async () => {
+  const res = await runCli('run', ['--json', '--spec-version', '2026-07-28', stateless]);
+  assert.equal(res.status, 0, res.stderr);
+  assert.deepEqual(JSON.parse(res.stdout), []);
+});
+
+test('`mcp-vet run` flags a legacy server under 2026-07-28 (exit 1)', async () => {
+  const res = await runCli('run', ['--spec-version', '2026-07-28', requiresInit]);
+  assert.equal(res.status, 1, res.stderr);
+  assert.ok(res.stdout.includes('requires-initialize-handshake'), res.stdout);
 });
 
 // ---------------------------------------------------------------------------

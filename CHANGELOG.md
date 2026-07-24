@@ -4,6 +4,44 @@ All notable changes to `mcp-vet` are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0]
+
+The full 2026-07-28 compliance suite — `mcp-vet probe --spec-version 2026-07-28`
+now covers all three breaking changes the release candidate makes to server
+behavior, not just the removed handshake.
+
+### Added
+
+- **`missing-server-discover` (ERROR, `--spec-version 2026-07-28`)** — calls
+  the `server/discover` RPC that every 2026-07-28 server MUST implement
+  (SEP-2575; it replaces the removed initialize handshake for up-front
+  capability discovery) and flags a server whose answer is an error, a hang, or
+  a result missing the required `capabilities` key. The spec defines
+  `server/discover` as JSON-RPC only — 2026-07-28 removes the HTTP GET
+  endpoint, so no `GET /mcp/discover` variant is probed.
+- **`legacy-resource-error-code` (ERROR, `--spec-version 2026-07-28`)** — reads
+  a deliberately nonexistent resource URI (`mcp-vet://probe/...`) and flags a
+  server that still answers `-32002` instead of the JSON-RPC standard `-32602`
+  (Invalid Params). Servers without `resources/read` (`-32601`) are skipped,
+  not flagged; unexpected codes are reported as inconclusive notes.
+- **`mcp-vet run`** — an alias for `mcp-vet probe`.
+- **`test/probe-fixtures/server-partial.mjs`** — a hybrid (handshake +
+  stateless) fixture with exactly one migration defect per mode
+  (`legacy-error-code` / `no-discover` / `bad-discover`), isolating each new
+  rule; 7 new tests (62 total), including proof that the new checks are gated
+  behind `--spec-version 2026-07-28` and the default probe is unchanged.
+
+### Changed
+
+- The stateless first request now sends the RC's exact namespaced `_meta` key
+  `io.modelcontextprotocol/clientCapabilities` (was the incorrect
+  `io.modelcontextprotocol/capabilities`); the stateless fixtures now *require*
+  the namespaced keys, locking the wire format into the tests.
+- The new checks run on whichever contact path succeeded (stateless or classic
+  fallback), so a handshake-only legacy server gets its complete 2026-07-28
+  migration report — handshake + discover findings — in a single probe.
+- `ProbeResult` gains `discoverOk` and `errorCodeOk` verdict fields.
+
 ## [0.5.0]
 
 The runtime-probe release — `mcp-vet probe` connects to a *running* MCP server

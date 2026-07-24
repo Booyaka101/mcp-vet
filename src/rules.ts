@@ -143,6 +143,26 @@ export const RUNTIME_RULES: Record<RuntimeRuleId, RuntimeRuleMeta> = {
       'Update your SDK to @modelcontextprotocol/server (the new 2026-07-28 package) and remove any initialize handler assumptions',
     docUrl: SPEC_URL,
   },
+  'missing-server-discover': {
+    id: 'missing-server-discover',
+    label: 'server/discover not implemented',
+    severity: 'ERROR',
+    explanation:
+      'The 2026-07-28 spec requires every server to implement the server/discover RPC (SEP-2575) — it replaces the removed initialize handshake as the way clients fetch supported protocol versions, capabilities, and identity. This server did not answer it with a result containing a capabilities key.',
+    after:
+      'Implement server/discover returning { capabilities, supportedVersions, ... } — @modelcontextprotocol/server (the 2026-07-28 SDK) answers it for you automatically.',
+    docUrl: SPEC_URL,
+  },
+  'legacy-resource-error-code': {
+    id: 'legacy-resource-error-code',
+    label: 'legacy -32002 resource error code',
+    severity: 'ERROR',
+    explanation:
+      'Reading a nonexistent resource returned the MCP-custom error code -32002; the 2026-07-28 spec changes it to the JSON-RPC standard -32602 (Invalid Params). Clients matching on the new code will misclassify this error.',
+    after:
+      "return { error: { code: -32602, message: 'Invalid params' } }; // was -32002 — the static scan's --fix rewrites source occurrences",
+    docUrl: SPEC_URL,
+  },
 };
 
 const CAP_RE = /capabilities/i;

@@ -298,7 +298,7 @@ export function reportProbeTerminal(result: ProbeResult, opts: TerminalOptions =
       c.green(
         `✔ no runtime violations — ` +
           (result.specVersion === '2026-07-28'
-            ? 'the server answers stateless 2026-07-28 requests and all tool schemas are JSON Schema 2020-12 compatible'
+            ? 'the server answers stateless 2026-07-28 requests, implements server/discover, uses the new resource error code, and all tool schemas are JSON Schema 2020-12 compatible'
             : 'all tool schemas are JSON Schema 2020-12 compatible'),
       ),
     );

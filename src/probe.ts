@@ -8,10 +8,19 @@
  *     2026-07-28) — makes a stateless first request (no initialize; capabilities
  *     travel in _meta per the 2026-07-28 RC). A server that rejects or hangs on
  *     it still requires the removed handshake.
+ *  3. `missing-server-discover` (ERROR, 2026-07-28 only) — calls the required
+ *     server/discover RPC (SEP-2575) and expects a result with a `capabilities`
+ *     key. There is no HTTP GET variant — 2026-07-28 removes the GET endpoint.
+ *  4. `legacy-resource-error-code` (ERROR, 2026-07-28 only) — reads a
+ *     deliberately nonexistent resource URI and flags a server that still
+ *     answers with the removed -32002 code instead of -32602 (Invalid Params).
+ *     Servers without resources support (-32601) are skipped, not flagged.
  *
  * The stateless verdict is cross-checked: the violation is only emitted when
  * the classic 2025-11-25 handshake path *does* work, so a dead/broken server is
- * reported as an operational error (exit 2), not a false violation.
+ * reported as an operational error (exit 2), not a false violation. Checks 3-4
+ * run on whichever contact path succeeded, so a legacy server gets a complete
+ * migration report in one probe.
  */
 import { spawn } from 'node:child_process';
 import * as fs from 'node:fs';
@@ -49,6 +58,10 @@ export interface ProbeResult {
   statelessOk: boolean | null;
   /** classic initialize-handshake verdict; null = not attempted */
   handshakeOk: boolean | null;
+  /** server/discover verdict; null = not probed (spec 2025-11-25) */
+  discoverOk: boolean | null;
+  /** nonexistent-resource error-code verdict; null = not probed or inconclusive */
+  errorCodeOk: boolean | null;
   notes: string[];
 }
 
@@ -304,12 +317,12 @@ function clientInfo() {
   return { name: 'mcp-vet', version: getVersion() };
 }
 
-/** _meta for a stateless 2026-07-28 first request (per the RC's namespaced keys). */
+/** _meta for a stateless 2026-07-28 request (per the RC's namespaced keys). */
 function statelessMeta() {
   return {
     'io.modelcontextprotocol/protocolVersion': '2026-07-28',
     'io.modelcontextprotocol/clientInfo': clientInfo(),
-    'io.modelcontextprotocol/capabilities': {},
+    'io.modelcontextprotocol/clientCapabilities': {},
   };
 }
 
@@ -317,6 +330,8 @@ interface AttemptResult {
   ok: boolean;
   tools?: any[];
   evidence: string;
+  /** the still-open connection on success — the caller closes it */
+  conn?: Connection;
 }
 
 /** Stateless 2026-07-28 first contact: tools/list with _meta, NO initialize. */
@@ -325,6 +340,7 @@ async function tryStateless(target: ProbeTarget, opts: ProbeOptions): Promise<At
   try {
     const resp = await conn.request('tools/list', { _meta: statelessMeta() }, opts.timeoutMs);
     if (resp.error) {
+      conn.close();
       return {
         ok: false,
         evidence: `stateless tools/list was rejected: ${resp.error.code ?? '?'} ${resp.error.message ?? ''}`.trim(),
@@ -332,10 +348,12 @@ async function tryStateless(target: ProbeTarget, opts: ProbeOptions): Promise<At
     }
     const tools = resp.result?.tools;
     if (!Array.isArray(tools)) {
+      conn.close();
       return { ok: false, evidence: 'stateless tools/list answered without a tools array' };
     }
-    return { ok: true, tools, evidence: 'server answered a stateless tools/list (no initialize)' };
+    return { ok: true, tools, conn, evidence: 'server answered a stateless tools/list (no initialize)' };
   } catch (err) {
+    conn.close();
     if (err instanceof TimeoutError) {
       return {
         ok: false,
@@ -343,8 +361,6 @@ async function tryStateless(target: ProbeTarget, opts: ProbeOptions): Promise<At
       };
     }
     return { ok: false, evidence: (err as Error).message };
-  } finally {
-    conn.close();
   }
 }
 
@@ -358,6 +374,7 @@ async function tryClassic(target: ProbeTarget, opts: ProbeOptions): Promise<Atte
       opts.timeoutMs,
     );
     if (init.error) {
+      conn.close();
       return {
         ok: false,
         evidence: `initialize was rejected: ${init.error.code ?? '?'} ${init.error.message ?? ''}`.trim(),
@@ -366,6 +383,7 @@ async function tryClassic(target: ProbeTarget, opts: ProbeOptions): Promise<Atte
     await conn.notify('notifications/initialized', {});
     const lst = await conn.request('tools/list', {}, opts.timeoutMs);
     if (lst.error) {
+      conn.close();
       return {
         ok: false,
         evidence: `tools/list after handshake was rejected: ${lst.error.code ?? '?'} ${lst.error.message ?? ''}`.trim(),
@@ -373,25 +391,142 @@ async function tryClassic(target: ProbeTarget, opts: ProbeOptions): Promise<Atte
     }
     const tools = lst.result?.tools;
     if (!Array.isArray(tools)) {
+      conn.close();
       return { ok: false, evidence: 'tools/list after handshake answered without a tools array' };
     }
-    return { ok: true, tools, evidence: 'initialize handshake + tools/list succeeded' };
+    return { ok: true, tools, conn, evidence: 'initialize handshake + tools/list succeeded' };
   } catch (err) {
-    return { ok: false, evidence: (err as Error).message };
-  } finally {
     conn.close();
+    return { ok: false, evidence: (err as Error).message };
   }
 }
 
-function handshakeFinding(targetLabel: string, evidence: string): Finding {
-  const rule = RUNTIME_RULES['requires-initialize-handshake'];
+// ---------------------------------------------------------------------------
+// 2026-07-28-only follow-up checks (run on the connection that already worked)
+// ---------------------------------------------------------------------------
+
+interface CheckOutcome {
+  /** true = passed, false = violation, null = skipped/inconclusive */
+  ok: boolean | null;
+  finding?: Finding;
+  note: string;
+}
+
+/** server/discover is REQUIRED on 2026-07-28 (SEP-2575) and must advertise capabilities. */
+async function checkServerDiscover(
+  conn: Connection,
+  label: string,
+  opts: ProbeOptions,
+): Promise<CheckOutcome> {
+  try {
+    const resp = await conn.request('server/discover', { _meta: statelessMeta() }, opts.timeoutMs);
+    if (resp.error) {
+      const evidence =
+        `server/discover was rejected: ${resp.error.code ?? '?'} ${resp.error.message ?? ''}`.trim();
+      return {
+        ok: false,
+        finding: runtimeFinding('missing-server-discover', label, evidence, 'high'),
+        note: `server/discover: rejected (${resp.error.code ?? '?'})`,
+      };
+    }
+    const caps = resp.result?.capabilities;
+    if (!caps || typeof caps !== 'object') {
+      const evidence = 'server/discover answered, but its result has no capabilities key';
+      return {
+        ok: false,
+        finding: runtimeFinding('missing-server-discover', label, evidence, 'high'),
+        note: 'server/discover: result missing the required capabilities key',
+      };
+    }
+    const versions = Array.isArray(resp.result?.supportedVersions)
+      ? ` · supportedVersions: ${resp.result.supportedVersions.join(', ')}`
+      : '';
+    return {
+      ok: true,
+      note: `server/discover: capabilities advertised (${Object.keys(caps).join(', ') || 'empty object'})${versions}`,
+    };
+  } catch (err) {
+    if (err instanceof TimeoutError) {
+      // No reply at all — a compliant server (or a legacy one) would at least
+      // answer -32601. A hang is a failure, but not a deterministic one.
+      return {
+        ok: false,
+        finding: runtimeFinding(
+          'missing-server-discover',
+          label,
+          `server/discover hung (${err.message})`,
+          'medium',
+        ),
+        note: 'server/discover: no response (hung)',
+      };
+    }
+    return { ok: null, note: `server/discover: check inconclusive — ${(err as Error).message}` };
+  }
+}
+
+/** A URI no real server should resolve — used to elicit the not-found error code. */
+const NONEXISTENT_URI = 'mcp-vet://probe/nonexistent-resource';
+
+/** 2026-07-28 changes resource-not-found from -32002 to -32602 (Invalid Params). */
+async function checkResourceErrorCode(
+  conn: Connection,
+  label: string,
+  opts: ProbeOptions,
+): Promise<CheckOutcome> {
+  try {
+    const resp = await conn.request(
+      'resources/read',
+      { uri: NONEXISTENT_URI, _meta: statelessMeta() },
+      opts.timeoutMs,
+    );
+    if (!resp.error) {
+      return {
+        ok: null,
+        note: `resource error-code check inconclusive — resources/read of ${NONEXISTENT_URI} unexpectedly succeeded`,
+      };
+    }
+    const code = resp.error.code;
+    if (code === -32002) {
+      const evidence =
+        `resources/read of nonexistent ${NONEXISTENT_URI} returned the removed code -32002 (${resp.error.message ?? ''})`.trim();
+      return {
+        ok: false,
+        finding: runtimeFinding('legacy-resource-error-code', label, evidence, 'high'),
+        note: 'resource error code: -32002 (legacy — must be -32602)',
+      };
+    }
+    if (code === -32602) {
+      return { ok: true, note: 'resource error code: -32602 (Invalid Params — correct for 2026-07-28)' };
+    }
+    if (code === -32601) {
+      return {
+        ok: null,
+        note: 'resource error-code check skipped — server does not implement resources/read (-32601)',
+      };
+    }
+    return {
+      ok: null,
+      note: `resource error-code check inconclusive — nonexistent resource returned ${code ?? 'no code'} (neither -32002 nor -32602)`,
+    };
+  } catch (err) {
+    return { ok: null, note: `resource error-code check inconclusive — ${(err as Error).message}` };
+  }
+}
+
+function runtimeFinding(
+  ruleId: 'requires-initialize-handshake' | 'missing-server-discover' | 'legacy-resource-error-code',
+  targetLabel: string,
+  evidence: string,
+  confidence: 'high' | 'medium' = 'high',
+): Finding {
+  const rule = RUNTIME_RULES[ruleId];
   return {
     file: targetLabel,
     line: 1,
     patternId: rule.id,
     patternLabel: rule.label,
     severity: rule.severity,
-    confidence: 'high',
+    confidence,
     explanation: rule.explanation,
     docUrl: rule.docUrl,
     before: evidence,
@@ -436,35 +571,57 @@ export async function probeServer(target: ProbeTarget, opts: ProbeOptions): Prom
   let tools: any[] | null = null;
   let statelessOk: boolean | null = null;
   let handshakeOk: boolean | null = null;
+  let discoverOk: boolean | null = null;
+  let errorCodeOk: boolean | null = null;
+  let conn: Connection | null = null;
 
-  if (opts.specVersion === '2026-07-28') {
-    const st = await tryStateless(target, opts);
-    statelessOk = st.ok;
-    notes.push(`stateless probe: ${st.evidence}`);
-    if (st.ok) {
-      tools = st.tools!;
+  try {
+    if (opts.specVersion === '2026-07-28') {
+      const st = await tryStateless(target, opts);
+      statelessOk = st.ok;
+      notes.push(`stateless probe: ${st.evidence}`);
+      if (st.ok) {
+        tools = st.tools!;
+        conn = st.conn!;
+      } else {
+        const cl = await tryClassic(target, opts);
+        handshakeOk = cl.ok;
+        if (cl.ok) {
+          // Confirmed: the server works — but only through the removed handshake.
+          tools = cl.tools!;
+          conn = cl.conn!;
+          notes.push(`fallback probe: ${cl.evidence}`);
+          findings.push(runtimeFinding('requires-initialize-handshake', label, st.evidence));
+        } else {
+          throw new ProbeError(
+            `could not reach the server statelessly (${st.evidence}) nor via the 2025-11-25 initialize handshake (${cl.evidence}) — is it running and speaking MCP?`,
+          );
+        }
+      }
+
+      // The remaining 2026-07-28 checks run on whichever contact path worked,
+      // so even a handshake-only server gets a complete migration report.
+      const disc = await checkServerDiscover(conn, label, opts);
+      discoverOk = disc.ok;
+      notes.push(disc.note);
+      if (disc.finding) findings.push(disc.finding);
+
+      const ec = await checkResourceErrorCode(conn, label, opts);
+      errorCodeOk = ec.ok;
+      notes.push(ec.note);
+      if (ec.finding) findings.push(ec.finding);
     } else {
       const cl = await tryClassic(target, opts);
       handshakeOk = cl.ok;
-      if (cl.ok) {
-        // Confirmed: the server works — but only through the removed handshake.
-        tools = cl.tools!;
-        notes.push(`fallback probe: ${cl.evidence}`);
-        findings.push(handshakeFinding(label, st.evidence));
-      } else {
-        throw new ProbeError(
-          `could not reach the server statelessly (${st.evidence}) nor via the 2025-11-25 initialize handshake (${cl.evidence}) — is it running and speaking MCP?`,
-        );
+      notes.push(`handshake probe: ${cl.evidence}`);
+      if (!cl.ok) {
+        throw new ProbeError(`could not connect: ${cl.evidence}`);
       }
+      tools = cl.tools!;
+      conn = cl.conn!;
     }
-  } else {
-    const cl = await tryClassic(target, opts);
-    handshakeOk = cl.ok;
-    notes.push(`handshake probe: ${cl.evidence}`);
-    if (!cl.ok) {
-      throw new ProbeError(`could not connect: ${cl.evidence}`);
-    }
-    tools = cl.tools!;
+  } finally {
+    conn?.close();
   }
 
   for (const tool of tools) {
@@ -484,6 +641,8 @@ export async function probeServer(target: ProbeTarget, opts: ProbeOptions): Prom
     toolCount: tools.length,
     statelessOk,
     handshakeOk,
+    discoverOk,
+    errorCodeOk,
     notes,
   };
 }
