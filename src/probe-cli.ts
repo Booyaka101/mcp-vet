@@ -27,13 +27,17 @@ export async function runProbeCli(argv: string[]): Promise<number> {
   program
     .name('mcp-vet probe')
     .description(
-      'Connect to a RUNNING MCP server (stdio command or Streamable HTTP URL) and vet its wire behavior: JSON Schema dialect of tool schemas (SEP-2106) and, with --spec-version 2026-07-28, stateless-protocol readiness, the required server/discover RPC (SEP-2575), and the -32002 → -32602 resource error-code change.',
+      'Connect to a RUNNING MCP server (stdio command or Streamable HTTP URL) and vet its wire behavior: JSON Schema dialect of tool schemas (SEP-2106) and, with --spec-version 2026-07-28, stateless-protocol readiness, the required server/discover RPC (SEP-2575), and the -32002 → -32602 resource error-code change. Add --spec 2026-07-28 to ALSO run the compliance suite: stateless-no-session, stateless-no-init, required-headers, and the deprecated-sampling/roots/logging warnings.',
     )
     .argument('<target...>', 'server URL (http/https) or a command + args to spawn (stdio)')
     .option(
       '--spec-version <version>',
       `MCP revision to vet against: ${SPEC_VERSIONS.join(' | ')}`,
       '2025-11-25',
+    )
+    .option(
+      '--spec <version>',
+      `shorthand for --spec-version that ALSO runs the extra compliance suite (stateless-no-session, stateless-no-init, required-headers, deprecated-sampling/roots/logging): ${SPEC_VERSIONS.join(' | ')}`,
     )
     .option('--timeout <ms>', 'per-request timeout in milliseconds', '8000')
     .option('--fail-on <level>', `exit non-zero on: ${FAILON_VALUES.join(' | ')}`, 'breaking')
@@ -56,6 +60,7 @@ export async function runProbeCli(argv: string[]): Promise<number> {
 
   const opts = program.opts<{
     specVersion: string;
+    spec?: string;
     timeout: string;
     failOn: string;
     json?: boolean;
@@ -64,10 +69,15 @@ export async function runProbeCli(argv: string[]): Promise<number> {
     quiet?: boolean;
   }>();
 
-  if (!SPEC_VERSIONS.includes(opts.specVersion as SpecVersion)) {
-    fail(`invalid --spec-version "${opts.specVersion}". Valid: ${SPEC_VERSIONS.join(', ')}`);
+  // `--spec` is a shorthand for `--spec-version` that ALSO enables the extra
+  // compliance suite. When present it wins over --spec-version.
+  const specChecks = opts.spec !== undefined;
+  const rawSpec = opts.spec ?? opts.specVersion;
+  if (!SPEC_VERSIONS.includes(rawSpec as SpecVersion)) {
+    const flag = opts.spec !== undefined ? '--spec' : '--spec-version';
+    fail(`invalid ${flag} "${rawSpec}". Valid: ${SPEC_VERSIONS.join(', ')}`);
   }
-  const specVersion = opts.specVersion as SpecVersion;
+  const specVersion = rawSpec as SpecVersion;
 
   const timeoutMs = Number(opts.timeout);
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
@@ -97,7 +107,7 @@ export async function runProbeCli(argv: string[]): Promise<number> {
 
   let result;
   try {
-    result = await probeServer(target, { specVersion, timeoutMs });
+    result = await probeServer(target, { specVersion, timeoutMs, specChecks });
   } catch (err) {
     if (err instanceof ProbeError) fail(err.message);
     throw err;

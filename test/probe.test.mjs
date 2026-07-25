@@ -85,6 +85,11 @@ const draft07 = join(fixtures, 'server-draft07.mjs');
 const requiresInit = join(fixtures, 'server-requires-init.mjs');
 const stateless = join(fixtures, 'server-stateless.mjs');
 const partial = join(fixtures, 'server-partial.mjs');
+const sessionful = join(fixtures, 'server-sessionful.mjs');
+const deprecated = join(fixtures, 'server-deprecated.mjs');
+// Small window keeps the deprecated-traffic listen (checks 4 & 6) snappy in CI;
+// emitting fixtures resolve early, and the fixtures here respond instantly.
+const SPEC = ['--spec', '2026-07-28', '--timeout', '1200'];
 
 // ---------------------------------------------------------------------------
 // Check 1 — json-schema-dialect
@@ -350,6 +355,96 @@ test('invalid --spec-version is an operational error (exit 2) naming the valid v
 test('invalid --timeout is an operational error (exit 2)', async () => {
   const res = await runProbe(['--timeout', 'soon', draft07]);
   assert.equal(res.status, 2);
+});
+
+// ---------------------------------------------------------------------------
+// `--spec 2026-07-28` compliance suite (checks 1-6, added on top of the above)
+// ---------------------------------------------------------------------------
+
+test('--spec runs the compliance suite IN ADDITION to the existing checks (migrated server stays clean)', async () => {
+  const res = await runProbeJson([...SPEC, stateless]);
+  assert.equal(res.status, 0, res.stderr);
+  assert.equal(res.findings.length, 0, JSON.stringify(res.findings, null, 2));
+});
+
+test('--spec: the passing/skip notes for all six checks are surfaced on a clean stateless server', async () => {
+  const res = await runProbe([...SPEC, stateless]);
+  assert.equal(res.status, 0, res.stderr);
+  for (const note of [
+    'stateless-no-session: passed',
+    'stateless-no-init: passed',
+    'required-headers: skipped', // stdio has no request headers
+    'deprecated-roots: clean',
+    'deprecated-sampling: clean',
+    'deprecated-logging: clean',
+  ]) {
+    assert.ok(res.stdout.includes(note), `missing note "${note}":\n${res.stdout}`);
+  }
+});
+
+test('stateless-no-session: a server that requires a session is flagged (ERROR, exit 1)', async () => {
+  const res = await runProbeJson([...SPEC, sessionful]);
+  assert.equal(res.status, 1, res.stderr);
+  const f = res.findings.find((x) => x.patternId === 'stateless-no-session');
+  assert.ok(f, `stateless-no-session present:\n${JSON.stringify(res.findings, null, 2)}`);
+  assert.equal(f.severity, 'ERROR');
+  assert.ok(/session/i.test(f.before), 'evidence records the session rejection');
+});
+
+test('stateless-no-init: a server requiring the handshake is flagged, WITHOUT a false stateless-no-session', async () => {
+  const res = await runProbeJson([...SPEC, requiresInit]);
+  assert.equal(res.status, 1, res.stderr);
+  const ids = res.findings.map((f) => f.patternId);
+  assert.ok(ids.includes('stateless-no-init'), `stateless-no-init present:\n${JSON.stringify(res.findings, null, 2)}`);
+  // "Server not initialized" is not a session error — no-session must not fire.
+  assert.ok(!ids.includes('stateless-no-session'), 'no-session must not false-positive on a non-session rejection');
+});
+
+test('deprecated-sampling/roots/logging: a migrated-but-deprecated server yields exactly three WARNs (exit 0)', async () => {
+  const res = await runProbeJson([...SPEC, deprecated]);
+  assert.equal(res.status, 0, `WARN-only must not fail the default gate\n${res.stderr}`);
+  const ids = res.findings.map((f) => f.patternId).sort();
+  assert.deepEqual(ids, ['deprecated-logging', 'deprecated-roots', 'deprecated-sampling']);
+  for (const f of res.findings) assert.equal(f.severity, 'WARN');
+  const sampling = res.findings.find((f) => f.patternId === 'deprecated-sampling');
+  assert.ok(/July 2027/.test(sampling.after), 'sampling fix names the removal date');
+});
+
+test('--spec --fail-on any exits 1 on the WARN-only deprecated findings', async () => {
+  const res = await runProbe([...SPEC, '--fail-on', 'any', deprecated]);
+  assert.equal(res.status, 1, res.stderr);
+});
+
+test('the compliance suite is GATED behind --spec (plain --spec-version 2026-07-28 does not run it)', async () => {
+  const res = await runProbeJson(['--spec-version', '2026-07-28', '--timeout', '1200', sessionful]);
+  assert.equal(res.status, 1, res.stderr);
+  const ids = res.findings.map((f) => f.patternId);
+  // existing checks still fire...
+  assert.ok(ids.includes('requires-initialize-handshake'));
+  // ...but none of the new compliance-suite checks do
+  for (const id of ['stateless-no-session', 'stateless-no-init', 'required-headers']) {
+    assert.ok(!ids.includes(id), `${id} must not run without --spec`);
+  }
+});
+
+test('required-headers: an HTTP server that accepts Mcp-Method/Mcp-Name passes (note surfaced)', async () => {
+  const srv = await startHttpFixture('stateless');
+  try {
+    const res = await runProbe([...SPEC, srv.url]);
+    assert.equal(res.status, 0, res.stderr);
+    assert.ok(
+      res.stdout.includes('required-headers: passed'),
+      `required-headers ran and passed on HTTP:\n${res.stdout}`,
+    );
+  } finally {
+    srv.kill();
+  }
+});
+
+test('invalid --spec is an operational error (exit 2) naming the valid values', async () => {
+  const res = await runProbe(['--spec', '2099-01-01', stateless]);
+  assert.equal(res.status, 2);
+  assert.ok(res.stderr.includes('--spec') && res.stderr.includes('2026-07-28'));
 });
 
 // ---------------------------------------------------------------------------

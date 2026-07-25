@@ -264,6 +264,26 @@ The stateless verdict is **cross-checked** before it becomes a violation: `requi
 3. When your server targets `2026-07-28` (e.g. after moving to `@modelcontextprotocol/server` 2.x): drop `--fail-on none` so the three ERROR-level checks gate the build. A correctly migrated server passes all of them; the pre-migration server fails `requires-initialize-handshake` and `missing-server-discover` immediately.
 4. Keep a `2025-11-25` probe in the matrix until every client you serve has moved (the rollout is a window, not a day — see [What actually happens on July 28](#what-actually-happens-on-july-28)).
 
+### `--spec 2026-07-28` — the extra compliance suite
+
+`--spec` is a shorthand for `--spec-version` that **also** runs six additional wire-level checks *on top of* the ones above. `--spec 2026-07-28` vets against the new revision **and** adds the suite; plain `--spec-version 2026-07-28` is unchanged and never runs it, so existing CI invocations keep their exact behavior.
+
+```bash
+# full readiness AND the extra compliance suite
+npx @booyaka/mcp-vet probe --spec 2026-07-28 node ./dist/server.js
+```
+
+| ID | Severity | What it checks |
+| --- | --- | --- |
+| `stateless-no-session` | 🔴 ERROR | sends `tools/list` with **no** `Mcp-Session-Id` and flags a server that rejects it with a session error — sessions are removed on 2026-07-28 (SEP-2567), so a stateless request must be served |
+| `stateless-no-init` | 🔴 ERROR | sends `tools/list` with **no** `initialize`/`initialized` handshake and flags a server that rejects it as uninitialized — the handshake is removed (SEP-2575); a compliant server answers the first request directly |
+| `required-headers` | 🔴 ERROR | sends a request carrying the now-required `Mcp-Method` / `Mcp-Name` routing headers and flags a server that errors on them. Skipped for **stdio** targets (there are no request headers over stdio) |
+| `deprecated-sampling` | 🟡 WARN | observes a server-initiated `sampling/createMessage` request. Sampling is deprecated in 2026-07-28 and **eligible for removal July 2027** — migrate to a direct LLM provider API |
+| `deprecated-roots` | 🟡 WARN | flags a `roots/list` that returns a result — the roots capability is deprecated |
+| `deprecated-logging` | 🟡 WARN | observes a server-emitted `notifications/message` — the MCP logging protocol is deprecated; migrate to stderr (stdio) or OpenTelemetry |
+
+The two `stateless-*` checks are cross-checked the same way the rest of the probe is: a server that answers a stateless, session-less, handshake-less `tools/list` passes both; one that rejects it is classified by *why* — a `session` error trips `stateless-no-session`, an `uninitialized` error trips `stateless-no-init` (a session rejection trips both, since a sessionful server is also not answering the first request directly). The two `deprecated-sampling` / `deprecated-logging` checks watch for server→client traffic for a short window (up to the spec's 5 s, bounded by `--timeout`) and report only what the server actually sends — a server that never samples or logs stays clean. The suite runs on its own fresh connection after the standard probe completes, so the ERROR checks above are unaffected.
+
 Probe findings use the same report formats as the scan: `--json` (machine-readable array on stdout) and `--sarif [file]` (SARIF 2.1.0 — `ERROR` maps to `error`, `WARN` to `warning`), plus `--fail-on breaking|any|none` (default `breaking`: exit 1 only on `ERROR`), `--timeout <ms>` (default 8000, also the hang-detection window), `--quiet`, and `--color`/`--no-color`.
 
 Try it against the official reference server — the July 2026 `@modelcontextprotocol/server-everything` (beta 2026-07-28 SDK) answers stateless requests and already returns the new `-32602` resource error code, but it does not implement `server/discover` yet and its tool schemas still declare draft-07 — `probe` reports exactly that (1 ERROR, 13 WARN):

@@ -44,13 +44,26 @@ export type RuntimeRuleId =
   | 'json-schema-dialect'
   | 'requires-initialize-handshake'
   | 'missing-server-discover'
-  | 'legacy-resource-error-code';
+  | 'legacy-resource-error-code'
+  // the `--spec 2026-07-28` compliance suite (added on top of the checks above)
+  | 'stateless-no-session'
+  | 'stateless-no-init'
+  | 'required-headers'
+  | 'deprecated-sampling'
+  | 'deprecated-roots'
+  | 'deprecated-logging';
 
 export const ALL_RUNTIME_RULE_IDS: RuntimeRuleId[] = [
   'json-schema-dialect',
   'requires-initialize-handshake',
   'missing-server-discover',
   'legacy-resource-error-code',
+  'stateless-no-session',
+  'stateless-no-init',
+  'required-headers',
+  'deprecated-sampling',
+  'deprecated-roots',
+  'deprecated-logging',
 ];
 
 /** Any violation id — static pattern or runtime probe category. */

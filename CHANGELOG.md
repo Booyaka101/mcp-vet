@@ -4,6 +4,51 @@ All notable changes to `mcp-vet` are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0]
+
+An opt-in `--spec 2026-07-28` compliance suite for `mcp-vet probe` — six
+wire-level checks that run *in addition to* the existing ones, covering the
+stateless-protocol requirements and the three newly-deprecated features. Purely
+additive: no existing check changed, and plain `--spec-version 2026-07-28`
+behaves exactly as before.
+
+### Added
+
+- **`--spec <version>`** on `mcp-vet probe` — a shorthand for `--spec-version`
+  that ALSO runs the new compliance suite. `--spec 2026-07-28` vets against the
+  2026-07-28 revision *and* adds the six checks below.
+- **`stateless-no-session` (ERROR)** — sends a `tools/list` with no
+  `Mcp-Session-Id` and flags a server that rejects it with a session error
+  (sessions are removed, SEP-2567).
+- **`stateless-no-init` (ERROR)** — sends a `tools/list` with no
+  `initialize`/`initialized` handshake and flags a server that rejects it as
+  uninitialized (the handshake is removed, SEP-2575).
+- **`required-headers` (ERROR)** — sends a request carrying the now-required
+  `Mcp-Method` / `Mcp-Name` routing headers (Streamable HTTP) and flags a
+  server that errors on them; skipped for stdio targets (no request headers).
+- **`deprecated-sampling` (WARN)** — observes a server-initiated
+  `sampling/createMessage` request. Sampling is deprecated in 2026-07-28 and
+  eligible for removal July 2027; migrate to a direct LLM provider API.
+- **`deprecated-roots` (WARN)** — flags a `roots/list` that returns a result
+  (the roots capability is deprecated).
+- **`deprecated-logging` (WARN)** — observes a server-emitted
+  `notifications/message` (the MCP logging protocol is deprecated; migrate to
+  stderr or OpenTelemetry).
+- **`test/probe-fixtures/server-sessionful.mjs`** and
+  **`server-deprecated.mjs`** — new stdio fixtures isolating a session
+  requirement and the three deprecated features; 9 new tests (71 total),
+  including proof that the suite is gated behind `--spec` (plain
+  `--spec-version 2026-07-28` never runs it) and that a migrated server passes
+  every new check.
+
+### How it works
+
+The suite runs on its own fresh connection(s) after the existing probe path
+completes, so nothing above it changed. The prober's stdio/HTTP transports gain
+an optional server-message observer (used to catch the deprecated
+`sampling/createMessage` and `notifications/message` traffic) and per-request
+header support (used to send `Mcp-Method`/`Mcp-Name`).
+
 ## [0.6.0]
 
 The full 2026-07-28 compliance suite — `mcp-vet probe --spec-version 2026-07-28`

@@ -163,6 +163,69 @@ export const RUNTIME_RULES: Record<RuntimeRuleId, RuntimeRuleMeta> = {
       "return { error: { code: -32602, message: 'Invalid params' } }; // was -32002 — the static scan's --fix rewrites source occurrences",
     docUrl: SPEC_URL,
   },
+
+  // --- `--spec 2026-07-28` compliance suite (added on top of the four above) ---
+
+  'stateless-no-session': {
+    id: 'stateless-no-session',
+    label: 'requires a protocol-level session',
+    severity: 'ERROR',
+    explanation:
+      'A stateless tools/list sent with no Mcp-Session-Id was rejected with a session error. The 2026-07-28 spec removes the Mcp-Session-Id header and the protocol-level session (SEP-2567); the server must serve requests without one.',
+    after:
+      'Stop requiring a session: remove sessionIdGenerator / the Mcp-Session-Id gate and serve each request statelessly (client identity & capabilities arrive in per-request _meta).',
+    docUrl: SPEC_URL,
+  },
+  'stateless-no-init': {
+    id: 'stateless-no-init',
+    label: 'requires initialization before requests',
+    severity: 'ERROR',
+    explanation:
+      'A tools/list sent without a prior initialize/initialized handshake was rejected as uninitialized. The 2026-07-28 spec removes the handshake (SEP-2575); a compliant server answers the first request directly.',
+    after:
+      'Remove the initialize/initialized gate and answer requests immediately; read protocolVersion/clientInfo/capabilities from params._meta on every request.',
+    docUrl: SPEC_URL,
+  },
+  'required-headers': {
+    id: 'required-headers',
+    label: 'rejects the required Mcp-Method / Mcp-Name headers',
+    severity: 'ERROR',
+    explanation:
+      'The 2026-07-28 Streamable HTTP transport requires each request to carry Mcp-Method and Mcp-Name routing headers that mirror the JSON-RPC body. This server errored on a request that set them, so it will reject conforming 2026-07-28 clients.',
+    after:
+      'Accept (and, per spec, validate against the body) the Mcp-Method and Mcp-Name request headers rather than rejecting them.',
+    docUrl: SPEC_URL,
+  },
+  'deprecated-sampling': {
+    id: 'deprecated-sampling',
+    label: 'uses deprecated sampling (sampling/createMessage)',
+    severity: 'WARN',
+    explanation:
+      'The server issued a sampling/createMessage request. Sampling is deprecated in 2026-07-28 and eligible for removal in July 2027; the server-driven LLM call is being phased out.',
+    after:
+      'Migrate off sampling: call your LLM provider’s API directly from the server instead of asking the client to sample. Eligible for removal July 2027.',
+    docUrl: SPEC_URL,
+  },
+  'deprecated-roots': {
+    id: 'deprecated-roots',
+    label: 'uses deprecated roots',
+    severity: 'WARN',
+    explanation:
+      'The server answered roots/list with a result, indicating it relies on the roots capability, which is deprecated in 2026-07-28.',
+    after:
+      'Migrate off roots: pass the paths/URIs the server needs as explicit tool parameters instead of discovering them via the roots capability.',
+    docUrl: SPEC_URL,
+  },
+  'deprecated-logging': {
+    id: 'deprecated-logging',
+    label: 'uses deprecated MCP logging (notifications/message)',
+    severity: 'WARN',
+    explanation:
+      'The server emitted a notifications/message log notification. The MCP logging protocol is deprecated in 2026-07-28.',
+    after:
+      'Migrate off MCP logging: write logs to stderr (stdio transport) or emit OpenTelemetry instead of notifications/message.',
+    docUrl: SPEC_URL,
+  },
 };
 
 const CAP_RE = /capabilities/i;
