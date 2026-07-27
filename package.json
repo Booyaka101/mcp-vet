@@ -25,7 +25,7 @@
     "LICENSE"
   ],
   "engines": {
-    "node": ">=18"
+    "node": ">=22"
   },
   "author": "Booyaka101 <cbosch101@gmail.com>",
   "repository": {
