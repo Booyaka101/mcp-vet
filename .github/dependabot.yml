@@ -10,6 +10,12 @@ updates:
     open-pull-requests-limit: 10
     commit-message:
       prefix: 'chore(deps)'
+    ignore:
+      # Blocked upstream: this repo's toolchain is built on the TypeScript
+      # Compiler API and crashes on 7.0. ts7-compat-guard reports the blocker;
+      # remove this ignore once it clears.
+      - dependency-name: typescript
+        update-types: ['version-update:semver-major']
     groups:
       # Minor and patch only. Majors deliberately arrive as their own PR so one
       # breaking upgrade cannot redden — and block — a batch of safe ones.
