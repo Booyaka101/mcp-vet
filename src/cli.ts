@@ -84,7 +84,17 @@ if (process.argv[2] === 'fixtures') {
 // Async, so the scan pipeline only runs in the else-branch.
 if (process.argv[2] === 'probe' || process.argv[2] === 'run') {
   runProbeCli(process.argv.slice(3)).then(
-    (code) => process.exit(code),
+    (code) => {
+      // Calling process.exit() the moment the probe resolves tears the process
+      // down while undici's keep-alive sockets and the AbortSignal.timeout timer
+      // are still closing. On Windows that trips a libuv assertion
+      // (!(handle->flags & UV_HANDLE_CLOSING)) and the process dies with
+      // 0xC0000409 instead of the intended exit code. Set exitCode and let the
+      // loop drain instead; the unref'd fallback stops a lingering socket from
+      // ever hanging CI.
+      process.exitCode = code;
+      setTimeout(() => process.exit(code), 2000).unref();
+    },
     (err) => fail((err as Error).message),
   );
 } else {
