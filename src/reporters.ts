@@ -1,6 +1,6 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import chalk from 'chalk';
+import { createColors } from './colors';
 import { Finding, Severity, ALL_PATTERN_IDS, RuntimeRuleId } from './types';
 import { RULES, RUNTIME_RULES } from './rules';
 import { ScanResult } from './scanner';
@@ -9,9 +9,9 @@ import { SPEC_URL, SPEC_DATE, MANUAL_REVIEW, getVersion } from './constants';
 
 function makeChalk(color: boolean | undefined) {
   // color === true -> force on; false -> force off; undefined -> auto-detect
-  if (color === true) return new (chalk as any).Instance({ level: 1 });
-  if (color === false) return new (chalk as any).Instance({ level: 0 });
-  return new (chalk as any).Instance({});
+  if (color === true) return createColors(1);
+  if (color === false) return createColors(0);
+  return createColors();
 }
 
 function indent(text: string, pad: string): string {
