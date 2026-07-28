@@ -367,7 +367,7 @@ test('--spec runs the compliance suite IN ADDITION to the existing checks (migra
   assert.equal(res.findings.length, 0, JSON.stringify(res.findings, null, 2));
 });
 
-test('--spec: the passing/skip notes for all six checks are surfaced on a clean stateless server', async () => {
+test('--spec: the passing/skip notes for all ten checks are surfaced on a clean stateless server', async () => {
   const res = await runProbe([...SPEC, stateless]);
   assert.equal(res.status, 0, res.stderr);
   for (const note of [
@@ -377,8 +377,55 @@ test('--spec: the passing/skip notes for all six checks are surfaced on a clean 
     'deprecated-roots: clean',
     'deprecated-sampling: clean',
     'deprecated-logging: clean',
+    // v0.9.0 — the final-changelog checks all pass on the migrated fixture
+    'missing-result-type: passed',
+    'missing-cacheable-fields: passed',
+    'legacy-error-code-renumbered: passed',
+    'ping-still-answered: passed',
   ]) {
     assert.ok(res.stdout.includes(note), `missing note "${note}":\n${res.stdout}`);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// v0.9.0 — the four final-changelog checks (SEP-2322 / SEP-2549 / renumbering /
+// ping removal), isolated by server-partial.mjs which keeps all four legacy
+// behaviors in every mode.
+// ---------------------------------------------------------------------------
+
+test('--spec: a pre-final server trips all four new checks (resultType, cacheable, renumbered, ping)', async () => {
+  const res = await runProbeJson([...SPEC, partial, 'no-discover']);
+  assert.equal(res.status, 1, res.stderr);
+  const byId = (id) => res.findings.find((f) => f.patternId === id);
+  const resultType = byId('missing-result-type');
+  assert.ok(resultType, `missing-result-type present:\n${JSON.stringify(res.findings, null, 2)}`);
+  assert.equal(resultType.severity, 'ERROR');
+  assert.ok(resultType.before.includes('tools/list'), 'evidence names the offending method');
+  const cacheable = byId('missing-cacheable-fields');
+  assert.ok(cacheable, 'missing-cacheable-fields present');
+  assert.equal(cacheable.severity, 'WARN');
+  assert.ok(/ttlMs/.test(cacheable.explanation), 'explanation quotes the required fields');
+  const renumbered = byId('legacy-error-code-renumbered');
+  assert.ok(renumbered, 'legacy-error-code-renumbered present');
+  assert.equal(renumbered.severity, 'ERROR');
+  assert.ok(renumbered.before.includes('-32004') && renumbered.before.includes('-32022'),
+    'evidence records old and new code');
+  const ping = byId('ping-still-answered');
+  assert.ok(ping, 'ping-still-answered present');
+  assert.equal(ping.severity, 'WARN');
+});
+
+test('the four new checks are GATED behind --spec (plain --spec-version 2026-07-28 never runs them)', async () => {
+  const res = await runProbeJson(['--spec-version', '2026-07-28', '--timeout', '1200', partial, 'no-discover']);
+  assert.equal(res.status, 1, res.stderr); // the one gated defect (no-discover) still fires
+  const ids = res.findings.map((f) => f.patternId);
+  for (const id of [
+    'missing-result-type',
+    'missing-cacheable-fields',
+    'legacy-error-code-renumbered',
+    'ping-still-answered',
+  ]) {
+    assert.ok(!ids.includes(id), `${id} must not run without --spec`);
   }
 });
 

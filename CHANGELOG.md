@@ -4,6 +4,92 @@ All notable changes to `mcp-vet` are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0]
+
+The final-specification release. mcp-vet was built against the 2026-07-28
+release candidate; the FINAL Key Changes list published 2026-07-28 at
+<https://modelcontextprotocol.io/specification/draft/changelog> is materially
+longer, so a clean 0.8.0 scan was a false all-clear. This release closes that
+gap — every rule now cites a sentence pinned verbatim in
+`docs/SPEC-2026-07-28.md`. (The dated URL
+`/specification/2026-07-28` still returns 404; the final text is served under
+`/specification/draft/`.)
+
+### Added — seven BREAKING static rules (exit 1), in BOTH analyzers
+
+- **`PING_REMOVED`** — `ping` in MCP method-registration context,
+  `PingRequestSchema`, Python `types.PingRequest`. A `/ping` health route, a
+  bare `'ping'` string, or a tool merely *named* ping stays clean.
+- **`RESOURCE_SUBSCRIBE_REMOVED`** — `resources/subscribe`,
+  `resources/unsubscribe`, `SubscribeRequestSchema`,
+  `UnsubscribeRequestSchema`; the fix points at `subscriptions/listen` and its
+  four opt-in types.
+- **`ROOTS_LIST_CHANGED_REMOVED`** and **`LOGGING_SETLEVEL_REMOVED`** — a
+  RECLASSIFICATION: 0.8.0 mapped `notifications/roots/list_changed` and
+  `logging/setLevel` (+ their SDK schema constants) to the DEPRECATED
+  capability rules, reporting two hard removals as exit-0 warnings with a
+  grace-period label. They are BREAKING now; the `roots`/`logging` capability
+  *keys* stay DEPRECATED, and a test locks the severity split.
+- **`SSE_RESUMABILITY_REMOVED`** — the `Last-Event-ID` header string,
+  `lastEventId`, and `eventStore`/`resumptionToken`/`onresumptiontoken` passed
+  to a Streamable HTTP transport. Gated on file-level MCP context, so a plain
+  SSE client stays clean (locked by `negatives/sse-client.ts`).
+- **`ELICITATION_COMPLETE_REMOVED`** — `notifications/elicitation/complete`
+  and the `elicitationId` field.
+- **`ERROR_CODE_RENUMBERED`** — `-32001`/`-32003`/`-32004` → `-32020`/`-32021`/
+  `-32022`, flagged ONLY in a JSON-RPC error `code` position (`code:` key,
+  `*Error(...)` construction, comparison against `code`) — the changelog
+  grandfathers `-32000..-32019` for implementation-defined codes, so a bare
+  negative constant is never flagged.
+
+### Added — two DEPRECATED static rules (exit 0)
+
+- **`INCLUDE_CONTEXT_VALUES`** — `includeContext` set to `"thisServer"` /
+  `"allServers"` (medium; removal "Follows Sampling").
+- **`OAUTH_DCR`** — RFC7591 dynamic-client-registration surfaces
+  (`registration_endpoint`, `registration_access_token`,
+  `client_id_issued_at`) in favour of Client ID Metadata Documents (medium).
+
+### Added — probe & fixtures
+
+- Four checks join the opt-in `mcp-vet probe --spec 2026-07-28` suite (now ten):
+  **`missing-result-type`** (ERROR, SEP-2322), **`missing-cacheable-fields`**
+  (WARN, SEP-2549 `ttlMs` + `cacheScope`), **`legacy-error-code-renumbered`**
+  (ERROR — still answering `-32001`/`-32003`/`-32004`), and
+  **`ping-still-answered`** (WARN — `ping` returns a result instead of
+  `-32601`). All cross-checked: a dead or non-MCP server is exit 2, never a
+  false violation, and every inconclusive outcome is a note.
+- `mcp-vet fixtures` gains **`10-subscriptions-listen`** (opt-in +
+  `io.modelcontextprotocol/subscriptionId` tagging + `resources/subscribe` →
+  -32601) and **`11-mrtr`** (`resultType: "input_required"` + `inputRequests`,
+  retry with `inputResponses`) — eleven fixtures total.
+- `--fix` now rewrites the renumbered codes next to the existing `-32002` →
+  `-32602` (same-length, column-anchored); `--dry-run` lists every rewrite.
+- DEPRECATED findings now print the registry's exact removal window ("First
+  revision released on or after 2027-07-28", "Follows Sampling") instead of a
+  hardcoded 12 months.
+- New `test/fixtures/dirty/` (TS + Python, one instance of every new pattern),
+  migrated forms in `clean/`, new true-negatives, computed/split forms in
+  `adversarial/missed/`. 78 tests (was 71), none skipped.
+- BENCHMARK.md re-measured with the 18-rule engine on the same pinned corpus.
+
+## [0.8.0]
+
+Maintenance release — dependency and CI currency; no rule or probe changes.
+
+### Changed
+
+- Dropped `chalk` for a local colouriser; moved to `commander` 15,
+  `ts-morph` 28, `@types/node` 26.
+- CI tests on supported Node only (22/24/26); `engines.node` >= 22.
+- `mcp-vet probe` lets the event loop drain instead of calling
+  `process.exit()` — fixes an intermittent Windows libuv crash (0xC0000409)
+  on process teardown.
+- GitHub Actions moved to latest majors; Dependabot groups minor/patch and
+  splits majors; the blocked TypeScript 7 major is ignored until the
+  Compiler-API crash upstream clears; our own guards (npm-script-lens audit +
+  allowlist drift, ts7-compat-guard, pnpm11-ci-guard) run against this repo.
+
 ## [0.7.0]
 
 An opt-in `--spec 2026-07-28` compliance suite for `mcp-vet probe` — six

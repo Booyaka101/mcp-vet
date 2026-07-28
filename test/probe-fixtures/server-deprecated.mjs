@@ -61,9 +61,15 @@ createInterface({ input: process.stdin }).on('line', (line) => {
   if (msg.method === 'initialize') {
     return replyError(msg.id, -32601, 'Method not found: initialize was removed in 2026-07-28');
   }
+  // Migrated to the final changelog: renumbered version error + resultType +
+  // cacheable fields — so the ONLY findings stay the three deprecation WARNs.
+  const version = msg.params?._meta?.['io.modelcontextprotocol/protocolVersion'];
+  if (typeof version === 'string' && version !== '2026-07-28') {
+    return replyError(msg.id, -32022, `Unsupported protocol version: ${version}`);
+  }
   if (msg.method === 'tools/list') {
     emitDeprecatedTraffic(); // uses sampling + logging while handling the request
-    return reply(msg.id, { tools: TOOLS });
+    return reply(msg.id, { resultType: 'complete', tools: TOOLS, ttlMs: 60000, cacheScope: 'private' });
   }
   if (msg.method === 'server/discover') {
     return reply(msg.id, {

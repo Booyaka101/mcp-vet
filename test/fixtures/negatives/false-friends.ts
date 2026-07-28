@@ -10,4 +10,16 @@ const routing = { roots: ['/a'], logging: true }; // plain object, unrelated to 
 export function getRoots() {
   return routing.roots;
 }
-export { okSession, label, codes, methods };
+// `ping` as a plain health-check route / bare string / tool NAME — none of
+// these are MCP method registration, so PING_REMOVED must NOT fire.
+declare const app: any;
+app.get('/ping', () => ({ status: 'ok' }));
+const greeting = 'ping'; // bare string, no registration context
+const tool = { name: 'ping', description: 'a tool merely NAMED ping' };
+// -32001 as an implementation-defined SDK code OUTSIDE an error object — the
+// changelog grandfathers -32000..-32019 for implementations.
+const SDK_INTERNAL_CODE = -32001;
+const limits = { floor: -32004 }; // not a `code` key
+// 'thisServer' with no include-context field anywhere near it.
+const target = 'thisServer';
+export { okSession, label, codes, methods, greeting, tool, SDK_INTERNAL_CODE, limits, target };

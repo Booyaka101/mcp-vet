@@ -16,23 +16,41 @@ export type PatternId =
   | 'MCP_SESSION_ID'
   | 'INITIALIZE_HANDLER'
   | 'ERROR_CODE_32002'
+  | 'ERROR_CODE_RENUMBERED'
   | 'TASKS_LEGACY'
   | 'TASKS_LIST_REMOVED'
   | 'TASKS_RESULT_REMOVED'
+  | 'PING_REMOVED'
+  | 'RESOURCE_SUBSCRIBE_REMOVED'
+  | 'ROOTS_LIST_CHANGED_REMOVED'
+  | 'LOGGING_SETLEVEL_REMOVED'
+  | 'SSE_RESUMABILITY_REMOVED'
+  | 'ELICITATION_COMPLETE_REMOVED'
   | 'ROOTS_CAP'
   | 'SAMPLING_CAP'
-  | 'LOGGING_CAP';
+  | 'LOGGING_CAP'
+  | 'INCLUDE_CONTEXT_VALUES'
+  | 'OAUTH_DCR';
 
 export const ALL_PATTERN_IDS: PatternId[] = [
   'MCP_SESSION_ID',
   'INITIALIZE_HANDLER',
   'ERROR_CODE_32002',
+  'ERROR_CODE_RENUMBERED',
   'TASKS_LEGACY',
   'TASKS_LIST_REMOVED',
   'TASKS_RESULT_REMOVED',
+  'PING_REMOVED',
+  'RESOURCE_SUBSCRIBE_REMOVED',
+  'ROOTS_LIST_CHANGED_REMOVED',
+  'LOGGING_SETLEVEL_REMOVED',
+  'SSE_RESUMABILITY_REMOVED',
+  'ELICITATION_COMPLETE_REMOVED',
   'ROOTS_CAP',
   'SAMPLING_CAP',
   'LOGGING_CAP',
+  'INCLUDE_CONTEXT_VALUES',
+  'OAUTH_DCR',
 ];
 
 /**
@@ -51,7 +69,13 @@ export type RuntimeRuleId =
   | 'required-headers'
   | 'deprecated-sampling'
   | 'deprecated-roots'
-  | 'deprecated-logging';
+  | 'deprecated-logging'
+  // added in 0.9.0, from the FINAL 2026-07-28 changelog (SEP-2322 / SEP-2549 /
+  // the error-code allocation policy / the ping removal)
+  | 'missing-result-type'
+  | 'missing-cacheable-fields'
+  | 'legacy-error-code-renumbered'
+  | 'ping-still-answered';
 
 export const ALL_RUNTIME_RULE_IDS: RuntimeRuleId[] = [
   'json-schema-dialect',
@@ -64,6 +88,10 @@ export const ALL_RUNTIME_RULE_IDS: RuntimeRuleId[] = [
   'deprecated-sampling',
   'deprecated-roots',
   'deprecated-logging',
+  'missing-result-type',
+  'missing-cacheable-fields',
+  'legacy-error-code-renumbered',
+  'ping-still-answered',
 ];
 
 /** Any violation id — static pattern or runtime probe category. */
@@ -105,6 +133,20 @@ export interface Token {
    * against a stateless server even when the server itself scans clean.
    */
   clientSession?: boolean;
+  /**
+   * True when a numeric literal sits in a JSON-RPC error `code` position — the
+   * value of a `code` key/kwarg, an argument to an *Error(...) construction, or
+   * a comparison against something named `code`. Guards ERROR_CODE_RENUMBERED
+   * so arbitrary negative constants are never flagged (the 2026-07-28 changelog
+   * grandfathers -32000..-32019 for implementation-defined codes).
+   */
+  errorCode?: boolean;
+  /**
+   * True when an SSE-resumability option (`eventStore`, `resumptionToken`,
+   * `onresumptiontoken`, and their snake_case forms) is passed to something
+   * transport/client shaped. Raises SSE_RESUMABILITY_REMOVED to high confidence.
+   */
+  transportCtx?: boolean;
 }
 
 export interface Finding {

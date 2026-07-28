@@ -2,13 +2,21 @@
 import { Finding, PatternId, ViolationId } from './types';
 
 /**
- * Rules whose fix is a safe, purely mechanical text substitution. Only the
- * resource-not-found error code qualifies: -32002 -> -32602 is a same-length
- * swap with no semantic ambiguity. Everything else (removed handshake, removed
- * sessions, tasks/list removal, capability deprecations) requires human
- * judgement and is deliberately NOT auto-fixed.
+ * Rules whose fix is a safe, purely mechanical text substitution — same-length
+ * numeric swaps with no semantic ambiguity: the resource-not-found code
+ * -32002 -> -32602, and the 2026-07-28 error-code renumbering
+ * -32001 -> -32020, -32003 -> -32021, -32004 -> -32022 (HeaderMismatch,
+ * MissingRequiredClientCapability, UnsupportedProtocolVersion). Everything else
+ * (removed handshake, removed sessions, tasks/list removal, capability
+ * deprecations) requires human judgement and is deliberately NOT auto-fixed.
  */
-const FIXABLE: Set<PatternId> = new Set(['ERROR_CODE_32002']);
+const FIXABLE: Set<PatternId> = new Set(['ERROR_CODE_32002', 'ERROR_CODE_RENUMBERED']);
+
+/** old numeric literal -> new numeric literal, per fixable rule. */
+const REWRITES: Record<string, Record<string, string>> = {
+  ERROR_CODE_32002: { '-32002': '-32602' },
+  ERROR_CODE_RENUMBERED: { '-32001': '-32020', '-32003': '-32021', '-32004': '-32022' },
+};
 
 export interface FixPreview {
   file: string;
@@ -77,12 +85,21 @@ export function applyFixes(findings: Finding[], opts: FixOptions = {}): FixResul
 
       // Require an exact column match. We deliberately do NOT fall back to a
       // blind indexOf: a mislocated column (e.g. a skewed offset) could otherwise
-      // rewrite an unrelated `-32002` inside a string or comment and corrupt it.
+      // rewrite an unrelated occurrence inside a string or comment and corrupt it.
       let next: string | null = null;
-      if (col >= 0 && L.startsWith('-32002', col)) {
-        next = L.slice(0, col) + '-32602' + L.slice(col + 6);
-      } else if (col >= 0 && L.startsWith('32002', col)) {
-        next = L.slice(0, col) + '32602' + L.slice(col + 5);
+      const rewrites = REWRITES[f.patternId as string] ?? {};
+      for (const [from, to] of Object.entries(rewrites)) {
+        if (col >= 0 && L.startsWith(from, col)) {
+          next = L.slice(0, col) + to + L.slice(col + from.length);
+          break;
+        }
+        // Anchored at the digits (the '-' sits one column earlier in some
+        // emitter paths): swap just the digit run, keeping lengths equal.
+        const bare = from.slice(1);
+        if (col >= 0 && L.startsWith(bare, col)) {
+          next = L.slice(0, col) + to.slice(1) + L.slice(col + bare.length);
+          break;
+        }
       }
 
       if (next !== null && next !== L) {

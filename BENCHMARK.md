@@ -10,7 +10,7 @@ scanner is *known to miss* — so the claim is checkable rather than vibes.
 
 ## Corpus (pinned)
 
-Scanned with `mcp-vet` v0.4.0 (`node dist/cli.js <roots> --json`), all rules
+Originally scanned with `mcp-vet` v0.4.0 (re-scanned with v0.9.0 above) (`node dist/cli.js <roots> --json`), all rules
 enabled, default confidence (`low`), on 2026-07-23:
 
 | Repo | Commit | Scanned root | Files | LOC |
@@ -23,7 +23,56 @@ enabled, default confidence (`low`), on 2026-07-23:
 File counts are candidate files (`.ts/.tsx/.js/.mjs/.cjs/.py`) under the
 scanned roots, excluding `node_modules`.
 
-## Results
+## Results — v0.9.0 (18-rule engine, final 2026-07-28 changelog)
+
+Re-run 2026-07-28 with `mcp-vet` v0.9.0 on the SAME pinned corpus:
+**243 findings across 66 files** (was 105/41 with the 9-rule engine — the
+final changelog's removals fire heavily on the SDKs' own pre-final examples).
+By confidence: 100 high, 142 medium, 1 low.
+
+| Pattern | Findings |
+| --- | --- |
+| `SSE_RESUMABILITY_REMOVED` | 65 |
+| `MCP_SESSION_ID` | 49 |
+| `ELICITATION_COMPLETE_REMOVED` | 44 |
+| `RESOURCE_SUBSCRIBE_REMOVED` | 23 |
+| `SAMPLING_CAP` | 16 |
+| `LOGGING_CAP` | 16 |
+| `ROOTS_CAP` | 10 |
+| `ROOTS_LIST_CHANGED_REMOVED` | 5 |
+| `INITIALIZE_HANDLER` | 4 |
+| `PING_REMOVED` | 3 |
+| `TASKS_LEGACY` | 2 |
+| `TASKS_RESULT_REMOVED` | 2 |
+| `OAUTH_DCR` | 2 |
+| `ERROR_CODE_RENUMBERED` | 1 |
+| `LOGGING_SETLEVEL_REMOVED` | 1 |
+
+Labeling of the 138 NEW findings (spot-reviewed per category against source):
+
+- **136 true positives.** The corpus repos genuinely implement the removed
+  surfaces: the typescript-sdk `everything` example ships an
+  `InMemoryEventStore` + `Last-Event-ID` resumability transport (all 65 SSE
+  findings sit in those transport/resumability files), the elicitation examples
+  register `notifications/elicitation/complete` handlers and read
+  `elicitationId`, `everything/resources/subscriptions.ts` and friends register
+  `SubscribeRequestSchema`/`UnsubscribeRequestSchema`, and the bearer-auth
+  clients send `method: 'ping'`.
+- **2 counted as false positives (honest reading):**
+  `guides/serving/sessions-state-scaling.examples.ts:62` returns
+  `code: -32001` for "Session not found" — an *implementation-defined* use the
+  final policy grandfathers; static analysis cannot distinguish it from the
+  renumbered `HeaderMismatch`, so ERROR_CODE_RENUMBERED flags it and we count
+  it against ourselves. Plus the pre-existing `mcp-session-id` negative
+  assertion (below). During this run a `registerTool('ping', ...)` false
+  positive (a tool merely NAMED ping) was found and FIXED before release —
+  strict registration context now excludes tool/prompt/resource registration
+  calls, locked into `negatives/`.
+
+So the v0.9.0 headline on this corpus is **241/243 true positives (2 FP,
+0.8%)** — same discipline as before: FPs are counted, not defined away.
+
+## Results — v0.4.0 (9-rule engine, release-candidate era)
 
 **105 findings across 41 files** (TypeScript/JavaScript: 93, Python: 12).
 By confidence: 66 high, 38 medium, 1 low.

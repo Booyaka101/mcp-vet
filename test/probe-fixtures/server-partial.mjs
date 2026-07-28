@@ -50,6 +50,16 @@ createInterface({ input: process.stdin }).on('line', (line) => {
       serverInfo: { name: `fixture-partial-${mode}`, version: '1.0.0' },
     });
   }
+  // Pre-final-changelog behaviors, in EVERY mode — visible only to the opt-in
+  // `--spec 2026-07-28` suite (the --spec-version checks are unaffected):
+  //   - an unsupported protocolVersion still gets the RC's -32004 (final: -32022)
+  //   - the removed `ping` method still returns a result (final: -32601)
+  //   - tools/list results carry no resultType and no ttlMs/cacheScope
+  const version = msg.params?._meta?.['io.modelcontextprotocol/protocolVersion'];
+  if (typeof version === 'string' && version !== '2026-07-28' && version !== '2025-11-25') {
+    return replyError(msg.id, -32004, `Unsupported protocol version: ${version}`);
+  }
+  if (msg.method === 'ping') return reply(msg.id, {});
   if (msg.method === 'tools/list') return reply(msg.id, { tools: TOOLS });
   if (msg.method === 'server/discover') {
     if (mode === 'no-discover') {

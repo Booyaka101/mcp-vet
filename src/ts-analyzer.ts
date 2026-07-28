@@ -6,6 +6,9 @@ let counter = 0;
 
 const CAP = new Set(['roots', 'sampling', 'logging']);
 const INIT_STRINGS = new Set(['initialize', 'notifications/initialized']);
+// SSE-resumability option keys (SEP-2575 removal) — flagged at high confidence
+// only when passed to something transport/client shaped.
+const SSE_OPTION_KEYS = new Set(['eventStore', 'resumptionToken', 'onresumptiontoken']);
 
 function getProject(): Project {
   if (!project) {
@@ -61,6 +64,51 @@ function isClientTransportContext(node: Node): boolean {
   return false;
 }
 
+/**
+ * Is this numeric literal in a JSON-RPC error `code` position? Accepts the
+ * value of a `code:` property, an argument to an *Error(...) call/constructor,
+ * or a ==/=== comparison against something named code. Guards
+ * ERROR_CODE_RENUMBERED (-32000..-32019 stays implementation-defined).
+ */
+function isErrorCodeContext(anchor: Node): boolean {
+  const parent = anchor.getParent();
+  if (!parent) return false;
+
+  // { code: -32001 }
+  if (parent.getKind() === SyntaxKind.PropertyAssignment) {
+    try {
+      const pa = parent.asKind(SyntaxKind.PropertyAssignment)!;
+      if (pa.getName() === 'code' && pa.getInitializer()?.getStart() === anchor.getStart()) {
+        return true;
+      }
+    } catch {
+      /* computed key */
+    }
+  }
+
+  // err.code === -32001  /  code == -32001
+  if (parent.getKind() === SyntaxKind.BinaryExpression) {
+    const be = parent.asKind(SyntaxKind.BinaryExpression)!;
+    const op = be.getOperatorToken().getKind();
+    if (op === SyntaxKind.EqualsEqualsEqualsToken || op === SyntaxKind.EqualsEqualsToken) {
+      const left = be.getLeft();
+      const other = left.getStart() === anchor.getStart() ? be.getRight() : left;
+      if (/code/i.test(other.getText())) return true;
+    }
+  }
+
+  // new McpError(-32001, ...) / makeRpcError(-32001, ...)
+  if (
+    parent.getKind() === SyntaxKind.CallExpression ||
+    parent.getKind() === SyntaxKind.NewExpression
+  ) {
+    const expr = (parent as any).getExpression?.();
+    if (expr && /error/i.test(expr.getText())) return true;
+  }
+
+  return false;
+}
+
 /** Is `node` structurally inside a `capabilities` object / call argument? */
 function isInCapabilities(node: Node): boolean {
   let depth = 0;
@@ -83,8 +131,13 @@ function isInCapabilities(node: Node): boolean {
   return false;
 }
 
-/** Is this string literal used like a registered method name? */
-function isRegistrationContext(node: Node): boolean {
+/**
+ * Is this string literal used like a registered method name? `strict` drops the
+ * `name:` property form — a tool literally *named* "ping" is legal and common,
+ * so PING_REMOVED only accepts method/type keys, cases, comparisons and handler
+ * registration.
+ */
+function isRegistrationContext(node: Node, strict = false): boolean {
   const parent = node.getParent();
   if (!parent) return false;
 
@@ -108,7 +161,7 @@ function isRegistrationContext(node: Node): boolean {
     try {
       if (
         pa.getInitializer()?.getStart() === node.getStart() &&
-        /^(method|type|name)$/i.test(pa.getName())
+        (strict ? /^(method|type)$/i : /^(method|type|name)$/i).test(pa.getName())
       ) {
         return true;
       }
@@ -129,6 +182,8 @@ function isRegistrationContext(node: Node): boolean {
         .some((a) => a.getStart() === cur!.getStart() && a.getEnd() === cur!.getEnd());
       if (isArg) {
         const exprText = call.getExpression().getText();
+        // strict: registerTool('ping', ...) registers a TOOL NAME, not a method.
+        if (strict && /tool|prompt|resource/i.test(exprText)) break;
         if (/handler|handle|register|method|route|request|notification|(^|\.)on$/i.test(exprText)) {
           return true;
         }
@@ -194,6 +249,9 @@ export function analyzeTs(absPath: string, text: string): Token[] {
         const tok: Token = { kind: 'string', value, line, col };
         if (CAP.has(value)) tok.inCapabilities = isInCapabilities(node);
         if (INIT_STRINGS.has(value)) tok.registration = isRegistrationContext(node);
+        // 'ping' uses the STRICT registration check (a tool `name: 'ping'` is
+        // legal and must not count as MCP method registration).
+        if (value === 'ping') tok.registration = isRegistrationContext(node, true);
         tokens.push(tok);
         return;
       }
@@ -211,7 +269,9 @@ export function analyzeTs(absPath: string, text: string): Token[] {
           }
         }
         const { line, col } = posOf(anchor);
-        tokens.push({ kind: 'number', value, line, col });
+        const tok: Token = { kind: 'number', value, line, col };
+        if (isErrorCodeContext(anchor)) tok.errorCode = true;
+        tokens.push(tok);
         return;
       }
 
@@ -253,6 +313,11 @@ export function analyzeTs(absPath: string, text: string): Token[] {
       // client resuming/owning a session.
       if (value === 'sessionId' && isClientTransportContext(nameNode)) {
         tok.clientSession = true;
+      }
+      // SSE-resumability options handed to a transport (eventStore, resumption
+      // token callbacks) — removed by 2026-07-28 (SEP-2575).
+      if (SSE_OPTION_KEYS.has(value) && isClientTransportContext(nameNode)) {
+        tok.transportCtx = true;
       }
       tokens.push(tok);
     };

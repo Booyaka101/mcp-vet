@@ -14,3 +14,20 @@ routing = {"roots": ["/a"], "logging": True}
 
 def get_roots():
     return routing["roots"]
+
+
+# `ping` outside method-registration context must NOT fire PING_REMOVED.
+def health(app):
+    app.get("/ping")
+    greeting = "ping"
+    tool = {"name": "ping"}
+    return greeting, tool
+
+
+# Implementation-defined SDK code outside an error `code` position (the
+# changelog grandfathers -32000..-32019 for implementations).
+SDK_INTERNAL_CODE = -32001
+LIMITS = {"floor": -32004}
+
+# 'thisServer' with no include-context field anywhere near it.
+TARGET = "thisServer"

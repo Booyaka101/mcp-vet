@@ -24,8 +24,15 @@ INIT_STRINGS = {"initialize", "notifications/initialized"}
 HANDLERISH = re.compile(r"handler|handle|register|route|request|notification|method|^on$", re.I)
 CAPS_RE = re.compile(r"capabilit", re.I)
 TRANSPORTISH = re.compile(r"transport|client", re.I)
+ERRORISH = re.compile(r"error", re.I)
 METHODISH = ("method", "type")
 SESSION_KWARGS = ("session_id", "sessionId")
+# SSE-resumability option kwargs (SEP-2575 removal) — transport context only.
+SSE_KWARGS = (
+    "event_store", "eventStore",
+    "resumption_token", "resumptionToken",
+    "on_resumption_token", "onresumptiontoken",
+)
 
 
 def _func_mentions_caps(func):
@@ -82,7 +89,10 @@ def _func_is_handlerish(func):
     return bool(HANDLERISH.search(name))
 
 
-def _is_registration(node):
+def _is_registration(node, strict=False):
+    """Method-registration context for a string literal. ``strict`` drops the
+    ``"name"`` dict-key form — a tool literally *named* "ping" is legal, so
+    PING_REMOVED only accepts method/type keys, comparisons and handler calls."""
     p = getattr(node, "parent", None)
     if p is None:
         return False
@@ -91,7 +101,9 @@ def _is_registration(node):
             if o is not node and _mentions_method(o):
                 return True
     if isinstance(p, ast.Call) and node in p.args and _func_is_handlerish(p.func):
-        return True
+        # strict: register_tool("ping", ...) registers a TOOL NAME, not a method.
+        if not (strict and re.search(r"tool|prompt|resource", _func_name(p.func), re.I)):
+            return True
     if isinstance(p, ast.Dict):
         try:
             idx = p.values.index(node)
@@ -100,8 +112,54 @@ def _is_registration(node):
         if idx >= 0:
             k = p.keys[idx]
             if isinstance(k, ast.Constant) and isinstance(k.value, str):
-                if k.value.lower() in ("method", "type", "name"):
+                keys = ("method", "type") if strict else ("method", "type", "name")
+                if k.value.lower() in keys:
                     return True
+    return False
+
+
+def _number_value(node):
+    """The signed int value of a Constant / UnaryOp(-Constant), else None."""
+    if _is_int_constant(node):
+        return node.value
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub) and _is_int_constant(node.operand):
+        return -node.operand.value
+    return None
+
+
+def _is_error_code_context(node):
+    """Is this numeric literal in a JSON-RPC error `code` position? Accepts the
+    value of a "code" dict key, a code= kwarg, an argument to an *Error*(...)
+    call, or a comparison against something named code. Guards
+    ERROR_CODE_RENUMBERED (-32000..-32019 stays implementation-defined)."""
+    p = getattr(node, "parent", None)
+    if p is None:
+        return False
+    if isinstance(p, ast.Dict):
+        try:
+            idx = p.values.index(node)
+        except ValueError:
+            idx = -1
+        if idx >= 0:
+            k = p.keys[idx]
+            if isinstance(k, ast.Constant) and k.value == "code":
+                return True
+    if isinstance(p, ast.keyword) and p.arg == "code":
+        return True
+    if isinstance(p, ast.Call) and node in p.args and ERRORISH.search(_func_name(p.func)):
+        return True
+    if isinstance(p, ast.Compare):
+        for o in [p.left, *p.comparators]:
+            if o is not node:
+                name = o.attr if isinstance(o, ast.Attribute) else (o.id if isinstance(o, ast.Name) else "")
+                if name and "code" in name.lower():
+                    return True
+                if isinstance(o, ast.Subscript):
+                    s = o.slice
+                    if isinstance(s, ast.Index):  # py<3.9 compatibility
+                        s = s.value
+                    if isinstance(s, ast.Constant) and s.value == "code":
+                        return True
     return False
 
 
@@ -156,16 +214,22 @@ class Scanner:
                     tok["inCapabilities"] = in_caps
                 if node.value in INIT_STRINGS:
                     tok["registration"] = _is_registration(node)
+                # 'ping' uses the STRICT registration check (a tool named "ping"
+                # is legal and must not count as MCP method registration).
+                if node.value == "ping":
+                    tok["registration"] = _is_registration(node, strict=True)
                 self.tokens.append(tok)
             elif _is_int_constant(node):
-                self.tokens.append(
-                    {"kind": "number", "value": str(node.value), "line": node.lineno, "col": self._col(node)}
-                )
+                tok = {"kind": "number", "value": str(node.value), "line": node.lineno, "col": self._col(node)}
+                if _is_error_code_context(node):
+                    tok["errorCode"] = True
+                self.tokens.append(tok)
         elif isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub) and _is_int_constant(node.operand):
             # Anchor negative numbers at the '-' (the UnaryOp), matching ts-morph.
-            self.tokens.append(
-                {"kind": "number", "value": str(-node.operand.value), "line": node.lineno, "col": self._col(node)}
-            )
+            tok = {"kind": "number", "value": str(-node.operand.value), "line": node.lineno, "col": self._col(node)}
+            if _is_error_code_context(node):
+                tok["errorCode"] = True
+            self.tokens.append(tok)
         elif isinstance(node, ast.Name):
             self.tokens.append({"kind": "name", "value": node.id, "line": node.lineno, "col": self._col(node)})
             # An aliased identifier also counts as its canonical imported name.
@@ -223,6 +287,10 @@ class Scanner:
                             tok["benign"] = True
                         else:
                             tok["clientSession"] = True
+                    # SSE-resumability options handed to a transport factory
+                    # (event_store=..., resumption_token=...) — removed 2026-07-28.
+                    if kw.arg in SSE_KWARGS and TRANSPORTISH.search(_func_name(node.func)):
+                        tok["transportCtx"] = True
                     self.tokens.append(tok)
                 child_caps = caps_ctx or (kw.arg == "capabilities")
                 self.visit(kw.value, child_caps)

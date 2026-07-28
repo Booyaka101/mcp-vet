@@ -21,12 +21,34 @@ const ALL = [
   'MCP_SESSION_ID',
   'INITIALIZE_HANDLER',
   'ERROR_CODE_32002',
+  'ERROR_CODE_RENUMBERED',
   'TASKS_LEGACY',
   'TASKS_LIST_REMOVED',
   'TASKS_RESULT_REMOVED',
+  'PING_REMOVED',
+  'RESOURCE_SUBSCRIBE_REMOVED',
+  'ROOTS_LIST_CHANGED_REMOVED',
+  'LOGGING_SETLEVEL_REMOVED',
+  'SSE_RESUMABILITY_REMOVED',
+  'ELICITATION_COMPLETE_REMOVED',
   'ROOTS_CAP',
   'SAMPLING_CAP',
   'LOGGING_CAP',
+  'INCLUDE_CONTEXT_VALUES',
+  'OAUTH_DCR',
+];
+
+// The nine rule ids added or reclassified for the FINAL 2026-07-28 changelog.
+const NEW_IDS = [
+  'PING_REMOVED',
+  'RESOURCE_SUBSCRIBE_REMOVED',
+  'ROOTS_LIST_CHANGED_REMOVED',
+  'LOGGING_SETLEVEL_REMOVED',
+  'SSE_RESUMABILITY_REMOVED',
+  'ELICITATION_COMPLETE_REMOVED',
+  'ERROR_CODE_RENUMBERED',
+  'INCLUDE_CONTEXT_VALUES',
+  'OAUTH_DCR',
 ];
 
 function scanTarget(target, overrides = {}) {
@@ -59,7 +81,7 @@ function runCli(args, env = {}) {
 // Core detection
 // ---------------------------------------------------------------------------
 
-test('detects all 9 pattern types across the fixtures (exit 1)', () => {
+test('detects all 18 pattern types across the fixtures (exit 1)', () => {
   const res = runCli([fixtures]);
   const detected = new Set(res.findings.map((f) => f.patternId));
   for (const pid of ALL) {
@@ -81,13 +103,26 @@ test('severity classification is correct', () => {
     'MCP_SESSION_ID',
     'INITIALIZE_HANDLER',
     'ERROR_CODE_32002',
+    'ERROR_CODE_RENUMBERED',
     'TASKS_LEGACY',
     'TASKS_LIST_REMOVED',
     'TASKS_RESULT_REMOVED',
+    'PING_REMOVED',
+    'RESOURCE_SUBSCRIBE_REMOVED',
+    'ROOTS_LIST_CHANGED_REMOVED',
+    'LOGGING_SETLEVEL_REMOVED',
+    'SSE_RESUMABILITY_REMOVED',
+    'ELICITATION_COMPLETE_REMOVED',
   ]) {
     assert.deepEqual([...sev(pid)], ['BREAKING'], `${pid} is BREAKING`);
   }
-  for (const pid of ['ROOTS_CAP', 'SAMPLING_CAP', 'LOGGING_CAP']) {
+  for (const pid of [
+    'ROOTS_CAP',
+    'SAMPLING_CAP',
+    'LOGGING_CAP',
+    'INCLUDE_CONTEXT_VALUES',
+    'OAUTH_DCR',
+  ]) {
     assert.deepEqual([...sev(pid)], ['DEPRECATED'], `${pid} is DEPRECATED`);
   }
 });
@@ -131,7 +166,9 @@ test('SDK schema-constant handler registration is detected', () => {
   assert.ok(ids.has('INITIALIZE_HANDLER'), 'InitializeRequestSchema → INITIALIZE_HANDLER');
   assert.ok(ids.has('SAMPLING_CAP'), 'CreateMessageRequestSchema → SAMPLING_CAP');
   assert.ok(ids.has('ROOTS_CAP'), 'ListRootsRequestSchema → ROOTS_CAP');
-  assert.ok(ids.has('LOGGING_CAP'), 'SetLevelRequestSchema → LOGGING_CAP');
+  // RECLASSIFIED for the final changelog: setLevel is a hard removal now.
+  assert.ok(ids.has('LOGGING_SETLEVEL_REMOVED'), 'SetLevelRequestSchema → LOGGING_SETLEVEL_REMOVED');
+  assert.ok(ids.has('LOGGING_CAP'), 'notifications/message → LOGGING_CAP');
   assert.ok(ids.has('TASKS_LIST_REMOVED'), 'ListTasksRequestSchema → TASKS_LIST_REMOVED');
   assert.ok(ids.has('TASKS_RESULT_REMOVED'), 'GetTaskResultRequestSchema → TASKS_RESULT_REMOVED');
 });
@@ -167,8 +204,104 @@ test('sessionIdGenerator is flagged only when it is a real generator', () => {
 });
 
 // ---------------------------------------------------------------------------
+// v0.9.0: the nine rules added/reclassified for the FINAL 2026-07-28 changelog
+// ---------------------------------------------------------------------------
+
+test('dirty fixtures: every new/reclassified rule fires in BOTH analyzers (exit 1)', () => {
+  const res = runCli([join(fixtures, 'dirty')]);
+  assert.equal(res.status, 1, 'BREAKING findings exit 1');
+  const tsIds = new Set(res.findings.filter((f) => f.file.endsWith('.ts')).map((f) => f.patternId));
+  const pyIds = new Set(res.findings.filter((f) => f.file.endsWith('.py')).map((f) => f.patternId));
+  for (const pid of NEW_IDS) {
+    assert.ok(tsIds.has(pid), `TS analyzer detects ${pid} (got: ${[...tsIds].join(', ')})`);
+    assert.ok(pyIds.has(pid), `Python analyzer detects ${pid} (got: ${[...pyIds].join(', ')})`);
+  }
+  // The migrated sessionIdGenerator: undefined in the dirty file must NOT fire.
+  assert.ok(!tsIds.has('MCP_SESSION_ID'), 'benign sessionIdGenerator: undefined stays clean');
+});
+
+test('SEVERITY SPLIT LOCK: removed METHODS are BREAKING (exit 1) while the capability KEYS stay DEPRECATED (exit 0)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'mcp-vet-split-'));
+  // A server using the two hard-removed method strings…
+  const removed = join(dir, 'removed.ts');
+  writeFileSync(
+    removed,
+    [
+      "server.setRequestHandler('logging/setLevel', h);",
+      "server.notification({ method: 'notifications/roots/list_changed' });",
+    ].join('\n'),
+    'utf8',
+  );
+  const r1 = runCli([removed]);
+  const ids1 = new Set(r1.findings.map((f) => f.patternId));
+  assert.equal(r1.status, 1, 'hard removals fail the build');
+  assert.ok(ids1.has('LOGGING_SETLEVEL_REMOVED'), `LOGGING_SETLEVEL_REMOVED (got ${[...ids1]})`);
+  assert.ok(ids1.has('ROOTS_LIST_CHANGED_REMOVED'), 'ROOTS_LIST_CHANGED_REMOVED');
+  assert.ok(!ids1.has('LOGGING_CAP') && !ids1.has('ROOTS_CAP'), 'no double-count as DEPRECATED');
+  assert.ok(
+    r1.findings.every((f) => (ids1.has(f.patternId) ? f.severity === 'BREAKING' : true)),
+    'removed methods are BREAKING',
+  );
+  // …versus a server merely declaring the capability keys.
+  const caps = join(dir, 'caps.ts');
+  writeFileSync(caps, 'export const s = { capabilities: { logging: {}, roots: {} } };\n', 'utf8');
+  const r2 = runCli([caps]);
+  rmSync(dir, { recursive: true, force: true });
+  assert.equal(r2.status, 0, 'capability keys alone stay exit 0');
+  const ids2 = new Set(r2.findings.map((f) => f.patternId));
+  assert.ok(ids2.has('LOGGING_CAP') && ids2.has('ROOTS_CAP'), 'still reported as DEPRECATED');
+  assert.ok(r2.findings.every((f) => f.severity === 'DEPRECATED'), 'DEPRECATED only');
+});
+
+test('deprecated findings cite the registry removal window, not a hardcoded 12 months', () => {
+  const { findings } = scanTarget('server-capabilities.ts');
+  const roots = findings.find((f) => f.patternId === 'ROOTS_CAP');
+  assert.ok(roots, 'roots capability finding present');
+  assert.match(roots.explanation, /First revision released on or after 2027-07-28/);
+  assert.ok(!/12-month/.test(roots.explanation), 'no hardcoded 12-month window');
+});
+
+// ---------------------------------------------------------------------------
 // Autofix (--fix) and JSON stdout (--json)
 // ---------------------------------------------------------------------------
+
+test('--fix rewrites the renumbered codes (-32001/-32003/-32004) alongside -32002', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'mcp-vet-renum-'));
+  const file = join(dir, 'srv.ts');
+  writeFileSync(
+    file,
+    [
+      "const a = { error: { code: -32001, message: 'Header mismatch' } };",
+      "const b = { error: { code: -32003, message: 'Missing capability' } };",
+      'const c = err.code === -32004;',
+      "const d = { error: { code: -32002, message: 'not found' } };",
+      'const keep = -32001; // NOT in a code position — grandfathered, untouched',
+    ].join('\n'),
+    'utf8',
+  );
+  const res = spawnSync('node', [cli, file, '--fix', '--no-files', '--quiet'], { encoding: 'utf8' });
+  const after = readFileSync(file, 'utf8');
+  rmSync(dir, { recursive: true, force: true });
+  assert.ok(after.includes('code: -32020'), '-32001 → -32020');
+  assert.ok(after.includes('code: -32021'), '-32003 → -32021');
+  assert.ok(after.includes('=== -32022'), '-32004 → -32022');
+  assert.ok(after.includes('code: -32602'), '-32002 → -32602 still works');
+  assert.ok(after.includes('const keep = -32001;'), 'implementation-defined constant untouched');
+  assert.equal(res.status, 0, 'exit 0 once every breaking finding was auto-fixed');
+});
+
+test('--fix --dry-run lists all three renumber rewrites plus the -32002 rewrite', () => {
+  const res = spawnSync(
+    'node',
+    [cli, join(fixtures, 'dirty'), '--fix', '--dry-run', '--no-files'],
+    { encoding: 'utf8' },
+  );
+  assert.match(res.stdout, /dry-run/i);
+  for (const to of ['-32020', '-32021', '-32022', '-32602']) {
+    assert.ok(res.stdout.includes(to), `dry-run lists the ${to} rewrite:\n${res.stdout}`);
+  }
+  assert.equal(res.status, 1, 'nothing fixed in dry-run — findings still gate');
+});
 
 test('--fix rewrites -32002 -> -32602 in place and clears those findings', () => {
   const dir = mkdtempSync(join(tmpdir(), 'mcp-vet-fix-'));
@@ -346,7 +479,7 @@ test('SARIF output is valid 2.1.0 with rules and results', () => {
   rmSync(out, { recursive: true, force: true });
   assert.equal(s.version, '2.1.0');
   assert.equal(s.runs[0].tool.driver.name, 'mcp-vet');
-  assert.equal(s.runs[0].tool.driver.rules.length, 9);
+  assert.equal(s.runs[0].tool.driver.rules.length, 18);
   assert.ok(s.runs[0].results.length > 0);
   for (const r of s.runs[0].results) {
     assert.ok(['error', 'warning'].includes(r.level));
@@ -414,7 +547,14 @@ test('`mcp-vet fixtures <dir>` writes the conformance fixtures and checklist', (
   const res = spawnSync('node', [cli, 'fixtures', dir], { encoding: 'utf8' });
   assert.equal(res.status, 0, res.stderr);
   const names = readdirSync(dir);
-  assert.equal(names.filter((n) => n.endsWith('.json')).length, 9, 'nine fixture files');
+  assert.equal(names.filter((n) => n.endsWith('.json')).length, 11, 'eleven fixture files');
+  const listen = JSON.parse(readFileSync(join(dir, '10-subscriptions-listen.json'), 'utf8'));
+  assert.equal(listen.steps[0].send.body.method, 'subscriptions/listen');
+  assert.equal(listen.steps[0].send.body.params.subscriptions.toolsListChanged, true);
+  assert.match(listen.description, /io\.modelcontextprotocol\/subscriptionId/);
+  const mrtr = JSON.parse(readFileSync(join(dir, '11-mrtr.json'), 'utf8'));
+  assert.match(mrtr.steps[0].expect, /input_required/);
+  assert.ok('inputResponses' in mrtr.steps[1].send.body.params, 'retry carries inputResponses');
   assert.ok(names.includes('CHECKLIST.md'));
   const checklist = readFileSync(join(dir, 'CHECKLIST.md'), 'utf8');
   assert.match(checklist, /2025-11-25/, 'dual-version matrix names the old revision');

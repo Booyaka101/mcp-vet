@@ -263,6 +263,66 @@ export const CONFORMANCE_FIXTURES: ConformanceFixture[] = [
       },
     ],
   },
+  {
+    id: '10-subscriptions-listen',
+    title: 'subscriptions/listen opt-in replaces resource subscriptions',
+    description:
+      'The final changelog replaces the HTTP GET endpoint and resources/subscribe/resources/unsubscribe with subscriptions/listen: "Clients opt in to specific types (toolsListChanged, promptsListChanged, resourcesListChanged, resourceSubscriptions); the server acknowledges and tags notifications with io.modelcontextprotocol/subscriptionId."',
+    steps: [
+      {
+        send: {
+          headers: routingHeaders('subscriptions/listen'),
+          body: rpc(1, 'subscriptions/listen', {
+            subscriptions: {
+              toolsListChanged: true,
+              resourcesListChanged: true,
+            },
+          }),
+        },
+        expect:
+          'A long-lived POST-response stream. The server acknowledges the opted-in types; every change notification it later sends on this stream carries _meta["io.modelcontextprotocol/subscriptionId"]. Types the client did NOT opt into (promptsListChanged, resourceSubscriptions here) must not be delivered.',
+      },
+      {
+        send: {
+          headers: routingHeaders('resources/subscribe'),
+          body: rpc(2, 'resources/subscribe', { uri: 'demo://resource/1' }),
+        },
+        expect:
+          'JSON-RPC method-not-found (-32601). resources/subscribe (and resources/unsubscribe) are removed on ' +
+          NEW_REV +
+          '.',
+      },
+    ],
+  },
+  {
+    id: '11-mrtr',
+    title: 'MRTR: input_required interim results and client retry',
+    description:
+      'Multi Round-Trip Requests (SEP-2322) replace server-initiated requests (roots/list, sampling/createMessage, elicitation/create): the server returns resultType "input_required" with inputRequests, and the client retries the ORIGINAL request with inputResponses.',
+    steps: [
+      {
+        send: {
+          headers: routingHeaders('tools/call', 'book-flight'),
+          body: rpc(1, 'tools/call', { name: 'book-flight', arguments: { date: '2026-08-01' } }),
+        },
+        expect:
+          'If the tool needs more information: a result with resultType "input_required", an inputRequests array carrying the requests, and (optionally) requestState the server uses to correlate the retry. NOT a server-initiated elicitation/create request — those are replaced by this pattern.',
+      },
+      {
+        send: {
+          headers: routingHeaders('tools/call', 'book-flight'),
+          body: rpc(2, 'tools/call', {
+            name: 'book-flight',
+            arguments: { date: '2026-08-01' },
+            inputResponses: [{ id: '<from-step-1-inputRequests>', value: '<user answer>' }],
+            requestState: '<from-step-1, if provided>',
+          }),
+        },
+        expect:
+          'The retried ORIGINAL request, now carrying inputResponses, completes with resultType "complete". A server that instead waits for notifications/elicitation/complete (removed) or an elicitationId correlation (removed) fails.',
+      },
+    ],
+  },
 ];
 
 function checklist(): string {

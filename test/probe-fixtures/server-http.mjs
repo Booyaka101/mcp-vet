@@ -98,8 +98,17 @@ const server = createServer((req, res) => {
     ) {
       return rpcError(-32602, 'missing _meta (protocolVersion + clientCapabilities)');
     }
+    const version = meta['io.modelcontextprotocol/protocolVersion'];
+    if (version !== '2026-07-28') {
+      return rpcError(-32022, `Unsupported protocol version: ${version}`);
+    }
     if (msg.method === 'tools/list') {
-      return json({ jsonrpc: '2.0', id: msg.id, result: { tools: [MODERN_TOOL] } });
+      // Final 2026-07-28: required resultType + ttlMs/cacheScope.
+      return json({
+        jsonrpc: '2.0',
+        id: msg.id,
+        result: { resultType: 'complete', tools: [MODERN_TOOL], ttlMs: 60000, cacheScope: 'private' },
+      });
     }
     if (msg.method === 'server/discover') {
       return json({

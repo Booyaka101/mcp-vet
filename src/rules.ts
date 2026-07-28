@@ -1,5 +1,5 @@
 import { Token, Finding, PatternId, RuntimeRuleId, Severity, Confidence } from './types';
-import { SPEC_URL, SEP_2106_URL } from './constants';
+import { SPEC_URL, SEP_2106_URL, CHANGELOG_URL, DEPRECATED_REGISTRY_URL } from './constants';
 
 interface RuleMeta {
   id: PatternId;
@@ -7,13 +7,15 @@ interface RuleMeta {
   severity: Severity;
   explanation: string;
   after: string;
+  /** canonical docs anchor; defaults to the RC announcement when omitted */
+  docUrl?: string;
 }
 
 /**
- * Canonical metadata for each of the 7 patterns. The `after` strings are the
- * corrected 2026-07-28 patterns, authored from the official RC post
- * (blog.modelcontextprotocol.io/posts/2026-07-28-release-candidate) and the
- * tokenmix protocol changelog.
+ * Canonical metadata for each pattern. The `after` strings are the corrected
+ * 2026-07-28 patterns, authored from the FINAL changelog
+ * (modelcontextprotocol.io/specification/draft/changelog) and the deprecated
+ * features registry — every quote is pinned verbatim in docs/SPEC-2026-07-28.md.
  */
 export const RULES: Record<PatternId, RuleMeta> = {
   MCP_SESSION_ID: {
@@ -82,29 +84,148 @@ export const RULES: Record<PatternId, RuleMeta> = {
       '// Poll tasks/get until the task is terminal and read its result from there.',
     ].join('\n'),
   },
+  PING_REMOVED: {
+    id: 'PING_REMOVED',
+    label: 'removed ping method',
+    severity: 'BREAKING',
+    explanation:
+      'The 2026-07-28 changelog removes the method outright: "Remove `ping`, `logging/setLevel`, and `notifications/roots/list_changed`." A ping handler or ping request is dead protocol surface — a compliant peer answers it -32601.',
+    after: [
+      '// 2026-07-28: the MCP ping method is REMOVED (SEP-2575).',
+      '// Liveness is transport-level now — rely on the HTTP request/response itself',
+      '// (or process supervision on stdio); remove the ping handler/request.',
+    ].join('\n'),
+    docUrl: CHANGELOG_URL,
+  },
+  RESOURCE_SUBSCRIBE_REMOVED: {
+    id: 'RESOURCE_SUBSCRIBE_REMOVED',
+    label: 'removed resources/subscribe / resources/unsubscribe',
+    severity: 'BREAKING',
+    explanation:
+      'The 2026-07-28 changelog replaces per-resource subscriptions: "Replace the HTTP GET endpoint and `resources/subscribe`/`resources/unsubscribe` with `subscriptions/listen`" (SEP-2575). Servers/clients still speaking the old methods get -32601 from compliant peers.',
+    after: [
+      "// 2026-07-28: use subscriptions/listen — one long-lived POST-response stream.",
+      "// The client opts in to specific types: toolsListChanged, promptsListChanged,",
+      "// resourcesListChanged, resourceSubscriptions; the server acknowledges and tags",
+      "// notifications with _meta['io.modelcontextprotocol/subscriptionId'].",
+    ].join('\n'),
+    docUrl: CHANGELOG_URL,
+  },
+  ROOTS_LIST_CHANGED_REMOVED: {
+    id: 'ROOTS_LIST_CHANGED_REMOVED',
+    label: 'removed notifications/roots/list_changed',
+    severity: 'BREAKING',
+    explanation:
+      'notifications/roots/list_changed is a HARD REMOVAL on 2026-07-28 — the changelog lists it in "Remove `ping`, `logging/setLevel`, and `notifications/roots/list_changed`" (SEP-2575). This is stronger than the roots capability itself, which is only Deprecated: the notification stops working outright.',
+    after: [
+      '// 2026-07-28: notifications/roots/list_changed is REMOVED (SEP-2575).',
+      '// Roots itself is deprecated — pass directories/files via tool parameters,',
+      '// resource URIs, or server configuration instead of the roots capability.',
+    ].join('\n'),
+    docUrl: CHANGELOG_URL,
+  },
+  LOGGING_SETLEVEL_REMOVED: {
+    id: 'LOGGING_SETLEVEL_REMOVED',
+    label: 'removed logging/setLevel method',
+    severity: 'BREAKING',
+    explanation:
+      'logging/setLevel is a HARD REMOVAL on 2026-07-28 — the changelog lists it in "Remove `ping`, `logging/setLevel`, and `notifications/roots/list_changed`", adding: "Log level is now set per-request via `io.modelcontextprotocol/logLevel` in `_meta`" (SEP-2575). This is stronger than the logging capability itself, which is only Deprecated.',
+    after: [
+      "// 2026-07-28: logging/setLevel is REMOVED (SEP-2575).",
+      "// Read the per-request level instead: req.params._meta['io.modelcontextprotocol/logLevel'];",
+      '// servers MUST NOT emit notifications/message for requests that did not include it.',
+    ].join('\n'),
+    docUrl: CHANGELOG_URL,
+  },
+  SSE_RESUMABILITY_REMOVED: {
+    id: 'SSE_RESUMABILITY_REMOVED',
+    label: 'removed SSE stream resumability',
+    severity: 'BREAKING',
+    explanation:
+      'The 2026-07-28 changelog: "Remove SSE stream resumability and message redelivery (the `Last-Event-ID` header and SSE event IDs) from the Streamable HTTP transport." Event stores, resumption tokens and Last-Event-ID handling are dead code against 2026-07-28 peers.',
+    after: [
+      '// 2026-07-28: SSE resumability is REMOVED — no Last-Event-ID, no event IDs,',
+      '// no eventStore/resumptionToken. "A broken response stream loses the in-flight',
+      '// request; clients MUST re-issue it as a new request with a new request ID."',
+    ].join('\n'),
+    docUrl: CHANGELOG_URL,
+  },
+  ELICITATION_COMPLETE_REMOVED: {
+    id: 'ELICITATION_COMPLETE_REMOVED',
+    label: 'removed elicitation completion signal',
+    severity: 'BREAKING',
+    explanation:
+      'The 2026-07-28 changelog removes "the `notifications/elicitation/complete` notification and the `elicitationId` field of URL mode elicitation requests, both introduced in `2025-11-25`" — under MRTR the client learns the outcome by retrying the original request.',
+    after: [
+      '// 2026-07-28: no notifications/elicitation/complete, no elicitationId.',
+      '// MRTR (SEP-2322): return resultType "input_required" with inputRequests; the',
+      '// client retries the original request with inputResponses. Correlate across',
+      '// retries with your own identifier in requestState.',
+    ].join('\n'),
+    docUrl: CHANGELOG_URL,
+  },
+  ERROR_CODE_RENUMBERED: {
+    id: 'ERROR_CODE_RENUMBERED',
+    label: 'renumbered MCP error code (-32001/-32003/-32004)',
+    severity: 'BREAKING',
+    explanation:
+      'The 2026-07-28 error-code allocation policy renumbers the codes this draft introduced: HeaderMismatch -32001 → -32020, MissingRequiredClientCapability -32003 → -32021, UnsupportedProtocolVersion -32004 → -32022. (-32000..-32019 stays implementation-defined, so only JSON-RPC error `code` positions are flagged.)',
+    after: [
+      '// 2026-07-28: -32020..-32099 is reserved for the MCP specification.',
+      '// HeaderMismatch: -32001 → -32020 · MissingRequiredClientCapability: -32003 → -32021',
+      '// UnsupportedProtocolVersion: -32004 → -32022. `mcp-vet --fix` rewrites these in place.',
+    ].join('\n'),
+    docUrl: CHANGELOG_URL,
+  },
   ROOTS_CAP: {
     id: 'ROOTS_CAP',
     label: 'roots capability',
     severity: 'DEPRECATED',
     explanation:
-      'The roots capability is deprecated with a 12-month grace period; it still works but should not be used in new code.',
-    after: "// 'roots' capability is deprecated (≥12-month grace). Avoid new use; plan removal.",
+      'The Roots feature is Deprecated in 2026-07-28 (SEP-2577). Registry earliest removal: "First revision released on or after 2027-07-28". It still works, but new implementations should not adopt it. (Note: notifications/roots/list_changed is already a hard removal — see ROOTS_LIST_CHANGED_REMOVED.)',
+    after:
+      "// 'roots' is Deprecated (earliest removal: first revision released on or after 2027-07-28).\n// Pass directories or files via tool parameters, resource URIs, or server configuration.",
+    docUrl: DEPRECATED_REGISTRY_URL,
   },
   SAMPLING_CAP: {
     id: 'SAMPLING_CAP',
     label: 'sampling capability',
     severity: 'DEPRECATED',
     explanation:
-      'The sampling capability is deprecated with a 12-month grace period; prefer direct provider APIs.',
-    after: "// 'sampling' capability is deprecated (≥12-month grace). Prefer direct provider APIs.",
+      'The Sampling feature is Deprecated in 2026-07-28 (SEP-2577). Registry earliest removal: "First revision released on or after 2027-07-28". Integrate directly with LLM provider APIs instead.',
+    after:
+      "// 'sampling' is Deprecated (earliest removal: first revision released on or after 2027-07-28).\n// Integrate directly with LLM provider APIs instead of asking the client to sample.",
+    docUrl: DEPRECATED_REGISTRY_URL,
   },
   LOGGING_CAP: {
     id: 'LOGGING_CAP',
     label: 'logging capability',
     severity: 'DEPRECATED',
     explanation:
-      'The logging capability is deprecated with a 12-month grace period; use stderr or OpenTelemetry.',
-    after: "// 'logging' capability is deprecated (≥12-month grace). Use stderr or OpenTelemetry.",
+      'The Logging feature is Deprecated in 2026-07-28 (SEP-2577). Registry earliest removal: "First revision released on or after 2027-07-28". Log to stderr (stdio) or use OpenTelemetry. (Note: logging/setLevel is already a hard removal — see LOGGING_SETLEVEL_REMOVED.)',
+    after:
+      "// 'logging' is Deprecated (earliest removal: first revision released on or after 2027-07-28).\n// Log to stderr for stdio transports; use OpenTelemetry for observability.",
+    docUrl: DEPRECATED_REGISTRY_URL,
+  },
+  INCLUDE_CONTEXT_VALUES: {
+    id: 'INCLUDE_CONTEXT_VALUES',
+    label: 'deprecated includeContext values',
+    severity: 'DEPRECATED',
+    explanation:
+      'The includeContext values "thisServer" and "allServers" are Deprecated (SEP-2596): "Omit the field or use `\"none\"`; these values will be removed no later than the Sampling feature itself." Registry earliest removal: "Follows Sampling (SEP-2577)".',
+    after:
+      '// includeContext "thisServer"/"allServers" are Deprecated (removal follows Sampling).\n// Omit the field or use "none".',
+    docUrl: DEPRECATED_REGISTRY_URL,
+  },
+  OAUTH_DCR: {
+    id: 'OAUTH_DCR',
+    label: 'deprecated OAuth Dynamic Client Registration',
+    severity: 'DEPRECATED',
+    explanation:
+      'The OAuth 2.0 Dynamic Client Registration Protocol (RFC7591) is Deprecated as a client registration mechanism in favor of Client ID Metadata Documents (PR #2858). Registry earliest removal: "First revision released on or after 2027-07-28". It remains available for authorization servers without CIMD support.',
+    after:
+      '// RFC7591 dynamic registration is Deprecated (earliest removal: first revision released\n// on or after 2027-07-28). Prefer Client ID Metadata Documents; keep DCR only as a\n// fallback for authorization servers that do not support them.',
+    docUrl: DEPRECATED_REGISTRY_URL,
   },
 };
 
@@ -226,6 +347,49 @@ export const RUNTIME_RULES: Record<RuntimeRuleId, RuntimeRuleMeta> = {
       'Migrate off MCP logging: write logs to stderr (stdio transport) or emit OpenTelemetry instead of notifications/message.',
     docUrl: SPEC_URL,
   },
+
+  // --- added in 0.9.0 from the FINAL 2026-07-28 changelog ---
+
+  'missing-result-type': {
+    id: 'missing-result-type',
+    label: 'results missing the required resultType field',
+    severity: 'ERROR',
+    explanation:
+      'The final 2026-07-28 changelog (SEP-2322): "All results now carry a required `resultType` field: `\"complete\"` for ordinary results and `\"input_required\"` for multi round-trip request interim results." This server returned results without it, so strict 2026-07-28 clients will reject them.',
+    after:
+      'Add resultType to every result: "complete" for ordinary results, "input_required" for MRTR interim results (with inputRequests). The 2026-07-28 SDKs set it automatically.',
+    docUrl: CHANGELOG_URL,
+  },
+  'missing-cacheable-fields': {
+    id: 'missing-cacheable-fields',
+    label: 'list results missing ttlMs / cacheScope',
+    severity: 'WARN',
+    explanation:
+      'The final 2026-07-28 changelog (SEP-2549): "Require `ttlMs` and `cacheScope` fields on results returned by `tools/list`, `prompts/list`, `resources/list`, `resources/read`, and `resources/templates/list` via a new `CacheableResult` interface." `cacheScope` must be "public" or "private". Without them clients cannot cache and will re-poll.',
+    after:
+      "Return { ..., ttlMs: <freshness hint in ms>, cacheScope: 'public' | 'private' } on tools/list, prompts/list, resources/list, resources/read and resources/templates/list results.",
+    docUrl: CHANGELOG_URL,
+  },
+  'legacy-error-code-renumbered': {
+    id: 'legacy-error-code-renumbered',
+    label: 'server still uses the pre-final -32001/-32003/-32004 codes',
+    severity: 'ERROR',
+    explanation:
+      'The final 2026-07-28 changelog renumbers the codes introduced in this draft: HeaderMismatch -32001 → -32020, MissingRequiredClientCapability -32003 → -32021, UnsupportedProtocolVersion -32004 → -32022 (-32020..-32099 is now reserved for the MCP specification). This server answered with one of the old numbers, so 2026-07-28 clients matching the final codes will misclassify the error.',
+    after:
+      'Renumber: -32001 → -32020 (HeaderMismatch), -32003 → -32021 (MissingRequiredClientCapability), -32004 → -32022 (UnsupportedProtocolVersion). The static scan\'s --fix rewrites source occurrences.',
+    docUrl: CHANGELOG_URL,
+  },
+  'ping-still-answered': {
+    id: 'ping-still-answered',
+    label: 'answers the removed ping method',
+    severity: 'WARN',
+    explanation:
+      'The final 2026-07-28 changelog removes the method: "Remove `ping`, `logging/setLevel`, and `notifications/roots/list_changed`." This server answered a ping request with a result instead of -32601 (method not found), so it is still carrying removed protocol surface.',
+    after:
+      'Remove the ping handler and answer ping with -32601. Liveness is transport-level on 2026-07-28 (the HTTP request/response itself, or process supervision on stdio).',
+    docUrl: CHANGELOG_URL,
+  },
 };
 
 const CAP_RE = /capabilities/i;
@@ -238,13 +402,63 @@ const CAP_NAMES: Record<string, PatternId> = {
 // Method-name strings of the deprecated capabilities (SEP-2577). The methods are
 // deprecated, not just the capability keys — a server that references these by
 // method string (with no literal `capabilities` object nearby) is caught here.
+//
+// SEVERITY SPLIT (final 2026-07-28 changelog): `logging/setLevel` and
+// `notifications/roots/list_changed` are HARD REMOVALS ("Remove `ping`,
+// `logging/setLevel`, and `notifications/roots/list_changed`") and live in
+// REMOVED_METHODS below at BREAKING. Only the still-functional deprecated
+// surfaces stay here at DEPRECATED.
 const DEPRECATED_METHODS: Record<string, PatternId> = {
   'roots/list': 'ROOTS_CAP',
-  'notifications/roots/list_changed': 'ROOTS_CAP',
   'sampling/createMessage': 'SAMPLING_CAP',
-  'logging/setLevel': 'LOGGING_CAP',
   'notifications/message': 'LOGGING_CAP',
 };
+
+// Method-name strings REMOVED outright by the final 2026-07-28 changelog.
+// Exact string literals, BREAKING, high confidence (except `ping`, which is so
+// generic it additionally requires method-registration context — see below).
+const REMOVED_METHODS: Record<string, PatternId> = {
+  'notifications/roots/list_changed': 'ROOTS_LIST_CHANGED_REMOVED',
+  'logging/setLevel': 'LOGGING_SETLEVEL_REMOVED',
+  'resources/subscribe': 'RESOURCE_SUBSCRIBE_REMOVED',
+  'resources/unsubscribe': 'RESOURCE_SUBSCRIBE_REMOVED',
+  'notifications/elicitation/complete': 'ELICITATION_COMPLETE_REMOVED',
+};
+
+// -32001/-32003/-32004 → -32020/-32021/-32022 (error-code allocation policy).
+// Only flagged in a JSON-RPC error `code` position (t.errorCode) — the changelog
+// grandfathers -32000..-32019 for implementation-defined SDK codes, so a bare
+// negative constant is never evidence.
+export const RENUMBERED_ERROR_CODES: Record<string, string> = {
+  '-32001': '-32020',
+  '-32003': '-32021',
+  '-32004': '-32022',
+};
+
+// SSE-resumability surfaces (SEP-2575 removal). Normalized lowercase, separators
+// stripped, so eventStore/event_store/Last-Event-ID/lastEventId all match.
+const SSE_RESUMABILITY_TOKENS = new Set([
+  'lasteventid', // 'Last-Event-ID' header string, lastEventId, last_event_id
+  'eventstore',
+  'resumptiontoken',
+  'onresumptiontoken',
+]);
+
+// RFC7591/RFC8414 dynamic-client-registration field names (OAUTH_DCR).
+const DCR_TOKENS = new Set([
+  'registration_endpoint',
+  'registration_access_token',
+  'client_id_issued_at',
+]);
+
+// includeContext values deprecated by SEP-2596.
+const INCLUDE_CONTEXT_BAD_VALUES = new Set(['thisServer', 'allServers']);
+const INCLUDE_CONTEXT_RE = /includeContext|include_context/;
+
+// SSE/ping tokens are generic enough that they only count inside a file that is
+// actually MCP-related — a plain SSE client reading Last-Event-ID, or a /ping
+// health route, must stay clean.
+const MCP_CONTEXT_RE = /\bmcp\b|mcp[-_]|modelcontextprotocol|model context protocol/i;
 
 // SDK request/notification *schema constants* — how real MCP SDK servers register
 // handlers (e.g. `server.setRequestHandler(InitializeRequestSchema, ...)`). Matching
@@ -253,14 +467,23 @@ const SCHEMA_CONSTANTS: Record<string, PatternId> = {
   InitializeRequestSchema: 'INITIALIZE_HANDLER',
   InitializedNotificationSchema: 'INITIALIZE_HANDLER',
   ListRootsRequestSchema: 'ROOTS_CAP',
-  RootsListChangedNotificationSchema: 'ROOTS_CAP',
+  // RE-CLASSIFIED for the final changelog: the list_changed notification and
+  // logging/setLevel are hard removals, not deprecations.
+  RootsListChangedNotificationSchema: 'ROOTS_LIST_CHANGED_REMOVED',
+  SetLevelRequestSchema: 'LOGGING_SETLEVEL_REMOVED',
   CreateMessageRequestSchema: 'SAMPLING_CAP',
-  SetLevelRequestSchema: 'LOGGING_CAP',
   LoggingMessageNotificationSchema: 'LOGGING_CAP',
   ListTasksRequestSchema: 'TASKS_LIST_REMOVED',
   GetTaskResultRequestSchema: 'TASKS_RESULT_REMOVED',
   GetTaskRequestSchema: 'TASKS_LEGACY',
   CancelTaskRequestSchema: 'TASKS_LEGACY',
+  // ping is removed outright (SEP-2575) — TS SDK schema constant + the Python
+  // SDK type (`types.PingRequest`), both unambiguous.
+  PingRequestSchema: 'PING_REMOVED',
+  PingRequest: 'PING_REMOVED',
+  // resources/subscribe/unsubscribe are replaced by subscriptions/listen.
+  SubscribeRequestSchema: 'RESOURCE_SUBSCRIBE_REMOVED',
+  UnsubscribeRequestSchema: 'RESOURCE_SUBSCRIBE_REMOVED',
 };
 
 // SDK capability *constructor* identifiers (esp. the Python SDK:
@@ -303,11 +526,17 @@ export function applyRules(
   // Lines that mention "capabilities" — drive the medium-confidence heuristic
   // for the DEPRECATED capability rules (5-7).
   const capLines: number[] = [];
+  const includeContextLines: number[] = [];
+  let mcpContext = false;
   for (let i = 0; i < lines.length; i++) {
     if (CAP_RE.test(lines[i])) capLines.push(i + 1);
+    if (INCLUDE_CONTEXT_RE.test(lines[i])) includeContextLines.push(i + 1);
+    if (!mcpContext && MCP_CONTEXT_RE.test(lines[i])) mcpContext = true;
   }
   const nearCapabilities = (line: number) =>
     capLines.some((cl) => Math.abs(cl - line) <= 5);
+  const nearIncludeContext = (line: number) =>
+    includeContextLines.some((cl) => Math.abs(cl - line) <= 5);
 
   const push = (id: PatternId, t: Token, confidence: Confidence) => {
     if (!enabled.has(id)) return;
@@ -326,7 +555,7 @@ export function applyRules(
       severity: m.severity,
       confidence,
       explanation: m.explanation,
-      docUrl: SPEC_URL,
+      docUrl: m.docUrl ?? SPEC_URL,
       before: snippet(lines, t.line),
       after: m.after,
       absPath: opts.absPath,
@@ -377,6 +606,68 @@ export function applyRules(
     // Rule 8 — deprecated-capability method strings (exact, high confidence)
     if (t.kind === 'string' && DEPRECATED_METHODS[v]) {
       push(DEPRECATED_METHODS[v], t, 'high');
+    }
+
+    // Rule 8b — method strings REMOVED outright by the final changelog
+    // (notifications/roots/list_changed, logging/setLevel, resources/subscribe,
+    // resources/unsubscribe, notifications/elicitation/complete).
+    if (t.kind === 'string' && REMOVED_METHODS[v]) {
+      push(REMOVED_METHODS[v], t, 'high');
+    }
+
+    // Rule 8c — `ping` is removed, but the bare word is far too generic to
+    // match on its own (health-check routes, tool names). Only the exact string
+    // in MCP method-registration context counts (switch case, method
+    // comparison, `method:` key, handler registration — never a `name:` key).
+    if (t.kind === 'string' && v === 'ping' && t.registration) {
+      push('PING_REMOVED', t, 'high');
+    }
+
+    // Rule 8d — the removed elicitation correlation field. The method string is
+    // handled by REMOVED_METHODS; the field name is distinctive but could in
+    // principle exist in app code, so it reports at medium.
+    if ((t.kind === 'key' || t.kind === 'name') && (v === 'elicitationId' || v === 'elicitation_id')) {
+      push('ELICITATION_COMPLETE_REMOVED', t, 'medium');
+    }
+
+    // Rule 8e — SSE resumability surfaces. `Last-Event-ID`/`lastEventId` and the
+    // SDK option names (eventStore, resumptionToken, onresumptiontoken) are also
+    // used by plain non-MCP SSE code, so they require either transport context
+    // (high) or an MCP-related file (string forms high, identifier forms medium).
+    {
+      const norm = lower.replace(/[-_]/g, '');
+      if (SSE_RESUMABILITY_TOKENS.has(norm)) {
+        if (t.transportCtx) push('SSE_RESUMABILITY_REMOVED', t, 'high');
+        else if (mcpContext) {
+          push('SSE_RESUMABILITY_REMOVED', t, norm === 'lasteventid' && t.kind === 'string' ? 'high' : 'medium');
+        }
+      }
+    }
+
+    // Rule 8f — renumbered MCP error codes, strictly guarded on an error-code
+    // position (`code:` key/kwarg, *Error(...) construction, comparison against
+    // something named code). -32000..-32019 stays implementation-defined.
+    if (t.kind === 'number' && t.errorCode && RENUMBERED_ERROR_CODES[v]) {
+      push('ERROR_CODE_RENUMBERED', t, 'high');
+    }
+
+    // Rule 8g — deprecated includeContext values. The bare strings are guarded
+    // by proximity to an includeContext mention (same shape as the capability
+    // proximity heuristic), so unrelated "thisServer" strings stay clean.
+    if (t.kind === 'string' && INCLUDE_CONTEXT_BAD_VALUES.has(v) && nearIncludeContext(t.line)) {
+      push('INCLUDE_CONTEXT_VALUES', t, 'medium');
+    }
+
+    // Rule 8h — RFC7591 dynamic client registration. The RFC's own field names
+    // are the concrete signal; medium confidence per the registry's
+    // "remains available for backwards compatibility" framing.
+    if (DCR_TOKENS.has(lower)) {
+      push('OAUTH_DCR', t, 'medium');
+    } else if (
+      t.kind === 'name' &&
+      lower.replace(/[-_]/g, '').includes('dynamicclientregistration')
+    ) {
+      push('OAUTH_DCR', t, 'medium');
     }
 
     // Rule 9 — SDK schema-constant identifiers used to register handlers

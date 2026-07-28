@@ -643,14 +643,18 @@ async function waitUntil(pred: () => boolean, windowMs: number): Promise<void> {
 }
 
 /**
- * Runs the six `--spec 2026-07-28` compliance checks and returns the findings
+ * Runs the ten `--spec 2026-07-28` compliance checks and returns the findings
  * plus human-readable notes to fold into the ProbeResult:
- *   1. stateless-no-session   ERROR  — a no-session request must not be refused
- *   2. stateless-no-init      ERROR  — a no-handshake request must be answered
- *   3. required-headers       ERROR  — Mcp-Method/Mcp-Name must be accepted (HTTP)
- *   4. deprecated-sampling    WARN   — server issued sampling/createMessage
- *   5. deprecated-roots       WARN   — roots/list returned a result
- *   6. deprecated-logging     WARN   — server emitted notifications/message
+ *   1. stateless-no-session          ERROR — a no-session request must not be refused
+ *   2. stateless-no-init             ERROR — a no-handshake request must be answered
+ *   3. required-headers              ERROR — Mcp-Method/Mcp-Name must be accepted (HTTP)
+ *   4. deprecated-sampling           WARN  — server issued sampling/createMessage
+ *   5. deprecated-roots              WARN  — roots/list returned a result
+ *   6. deprecated-logging            WARN  — server emitted notifications/message
+ *   7. missing-result-type           ERROR — results must carry resultType (SEP-2322)
+ *   8. missing-cacheable-fields      WARN  — list results must carry ttlMs/cacheScope (SEP-2549)
+ *   9. legacy-error-code-renumbered  ERROR — -32001/-32003/-32004 → -32020/-32021/-32022
+ *  10. ping-still-answered           WARN  — the removed ping must be -32601
  */
 async function runSpecChecks(
   target: ProbeTarget,
@@ -787,6 +791,133 @@ async function runSpecChecks(
       notes.push(
         'deprecated-sampling / deprecated-logging: skipped — this transport cannot observe server-initiated traffic',
       );
+    }
+
+    // --- Checks 7-10 (added in 0.9.0 from the FINAL 2026-07-28 changelog) ---
+    // Each is cross-checked like the rest of the suite: a dead or non-MCP
+    // server never produces a false violation — an unreachable server already
+    // failed the main probe (exit 2), and every inconclusive outcome below is
+    // reported as a note, not a finding.
+
+    // Checks 7 & 8 — resultType (SEP-2322) and ttlMs/cacheScope (SEP-2549) on
+    // the cacheable list results. tools/list was already fetched above; the
+    // other cacheable endpoints are probed and skipped cleanly on -32601.
+    {
+      const missingResultType: string[] = [];
+      const missingCacheable: string[] = [];
+      let inspected = 0;
+      const inspect = (method: string, result: any) => {
+        if (!result || typeof result !== 'object') return;
+        inspected++;
+        if (result.resultType !== 'complete' && result.resultType !== 'input_required') {
+          missingResultType.push(method);
+        }
+        if (
+          typeof result.ttlMs !== 'number' ||
+          (result.cacheScope !== 'public' && result.cacheScope !== 'private')
+        ) {
+          missingCacheable.push(method);
+        }
+      };
+      if (!resp.error && resp.result) inspect('tools/list', resp.result);
+      for (const method of ['prompts/list', 'resources/list', 'resources/templates/list']) {
+        try {
+          const r = await conn.request(method, { _meta: statelessMeta() }, opts.timeoutMs);
+          if (!r.error && r.result) inspect(method, r.result);
+          // -32601 (not implemented) or any other error: skipped, never flagged.
+        } catch {
+          /* unreachable/timeout on an optional endpoint — skip */
+        }
+      }
+      if (inspected === 0) {
+        notes.push(
+          'missing-result-type / missing-cacheable-fields: inconclusive — no successful list result to inspect',
+        );
+      } else {
+        if (missingResultType.length > 0) {
+          findings.push(
+            runtimeFinding(
+              'missing-result-type',
+              label,
+              `result(s) without a valid resultType ("complete" | "input_required"): ${missingResultType.join(', ')}`,
+            ),
+          );
+          notes.push(`missing-result-type: FAIL — no resultType on ${missingResultType.join(', ')}`);
+        } else {
+          notes.push(`missing-result-type: passed — every inspected result carries resultType`);
+        }
+        if (missingCacheable.length > 0) {
+          findings.push(
+            runtimeFinding(
+              'missing-cacheable-fields',
+              label,
+              `cacheable result(s) without ttlMs + cacheScope ("public" | "private"): ${missingCacheable.join(', ')}`,
+            ),
+          );
+          notes.push(`missing-cacheable-fields: WARN — ttlMs/cacheScope missing on ${missingCacheable.join(', ')}`);
+        } else {
+          notes.push('missing-cacheable-fields: passed — inspected results carry ttlMs and cacheScope');
+        }
+      }
+    }
+
+    // Check 9 — legacy-error-code-renumbered. Send a request declaring an
+    // unsupported protocolVersion: the final spec answers
+    // UnsupportedProtocolVersionError -32022; a pre-final server still answers
+    // -32004 (or -32001/-32003 for its header/capability cousins).
+    try {
+      const bogus = {
+        ...statelessMeta(),
+        'io.modelcontextprotocol/protocolVersion': '2099-01-01',
+      };
+      const r = await conn.request('tools/list', { _meta: bogus }, opts.timeoutMs);
+      const code = r.error?.code;
+      if (code === -32001 || code === -32003 || code === -32004) {
+        const renumbered = { '-32001': '-32020', '-32003': '-32021', '-32004': '-32022' }[String(code) as '-32001'];
+        findings.push(
+          runtimeFinding(
+            'legacy-error-code-renumbered',
+            label,
+            `an unsupported protocolVersion was answered with the pre-final code ${code} (final 2026-07-28 code: ${renumbered})`,
+          ),
+        );
+        notes.push(`legacy-error-code-renumbered: FAIL — server answered ${code} (must be ${renumbered})`);
+      } else if (code === -32020 || code === -32021 || code === -32022) {
+        notes.push(`legacy-error-code-renumbered: passed — server uses the final code ${code}`);
+      } else if (!r.error) {
+        notes.push(
+          'legacy-error-code-renumbered: inconclusive — server accepted an unsupported protocolVersion (silent acceptance; see fixture 09-downgrade-refusal)',
+        );
+      } else {
+        notes.push(
+          `legacy-error-code-renumbered: inconclusive — rejected with an unrelated code (${code ?? '?'})`,
+        );
+      }
+    } catch (err) {
+      notes.push(`legacy-error-code-renumbered: inconclusive — ${(err as Error).message}`);
+    }
+
+    // Check 10 — ping-still-answered. The removed ping method must be -32601.
+    try {
+      const r = await conn.request('ping', { _meta: statelessMeta() }, opts.timeoutMs);
+      if (!r.error) {
+        findings.push(
+          runtimeFinding(
+            'ping-still-answered',
+            label,
+            'a ping request returned a result — the method is removed in 2026-07-28 and must be answered -32601',
+          ),
+        );
+        notes.push('ping-still-answered: WARN — server answered the removed ping method with a result');
+      } else if (r.error.code === -32601) {
+        notes.push('ping-still-answered: passed — ping is answered -32601 (method not found)');
+      } else {
+        notes.push(
+          `ping-still-answered: inconclusive — ping rejected for an unrelated reason (${r.error.code ?? '?'})`,
+        );
+      }
+    } catch (err) {
+      notes.push(`ping-still-answered: inconclusive — ${(err as Error).message}`);
     }
   } finally {
     unsub?.();

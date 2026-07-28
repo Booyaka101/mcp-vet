@@ -63,8 +63,16 @@ createInterface({ input: process.stdin }).on('line', (line) => {
       'missing _meta (io.modelcontextprotocol/protocolVersion + clientCapabilities)',
     );
   }
+  // Final 2026-07-28: an unsupported protocolVersion gets the RENUMBERED
+  // UnsupportedProtocolVersionError -32022 (was -32004 in the RC).
+  const version = msg.params._meta['io.modelcontextprotocol/protocolVersion'];
+  if (version !== '2026-07-28') {
+    return replyError(msg.id, -32022, `Unsupported protocol version: ${version}`);
+  }
   if (msg.method === 'tools/list') {
-    return reply(msg.id, { tools: TOOLS });
+    // Final 2026-07-28: required resultType (SEP-2322) + the CacheableResult
+    // fields ttlMs/cacheScope (SEP-2549).
+    return reply(msg.id, { resultType: 'complete', tools: TOOLS, ttlMs: 60000, cacheScope: 'private' });
   }
   if (msg.method === 'server/discover') {
     return reply(msg.id, {

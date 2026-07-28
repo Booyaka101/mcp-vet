@@ -4,8 +4,15 @@ import * as path from 'node:path';
 export const SPEC_DATE = 'July 28, 2026';
 export const SPEC_URL =
   'https://blog.modelcontextprotocol.io/posts/2026-07-28-release-candidate/';
-export const CHANGELOG_URL =
-  'https://tokenmix.ai/blog/mcp-updates-changelog-every-protocol-change-2026';
+/**
+ * The FINAL 2026-07-28 changelog. NOTE: the dated URL
+ * https://modelcontextprotocol.io/specification/2026-07-28 still returns 404 as
+ * of 2026-07-28 — the final text is served under /specification/draft/.
+ * The exact sentences every rule cites are pinned in docs/SPEC-2026-07-28.md.
+ */
+export const CHANGELOG_URL = 'https://modelcontextprotocol.io/specification/draft/changelog';
+/** Registry of Deprecated features — the source of truth for removal windows. */
+export const DEPRECATED_REGISTRY_URL = 'https://modelcontextprotocol.io/specification/draft/deprecated';
 export const SEP_2106_URL = 'https://modelcontextprotocol.io/seps/2106-json-schema-2020-12';
 export const JSON_SCHEMA_2020_12 = 'https://json-schema.org/draft/2020-12/schema';
 
