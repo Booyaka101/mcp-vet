@@ -7,8 +7,14 @@
 
 **On July 28, 2026 the Model Context Protocol ships its `2026-07-28` specification as final** — and it removes several things that today's MCP servers rely on. `mcp-vet` is a zero-config CLI that scans your MCP server source (TypeScript, JavaScript, and Python) for the exact patterns that will break client interop on that date, and tells you what to change.
 
-- Official release candidate: <https://blog.modelcontextprotocol.io/posts/2026-07-28-release-candidate/>
-- Protocol changelog: <https://tokenmix.ai/blog/mcp-updates-changelog-every-protocol-change-2026>
+- Final Key Changes list: <https://modelcontextprotocol.io/specification/draft/changelog>
+- Deprecated-features registry: <https://modelcontextprotocol.io/specification/draft/deprecated>
+- Release-candidate announcement: <https://blog.modelcontextprotocol.io/posts/2026-07-28-release-candidate/>
+- Every rule's source sentence, pinned verbatim: [docs/SPEC-2026-07-28.md](./docs/SPEC-2026-07-28.md)
+
+> **URL note.** `https://modelcontextprotocol.io/specification/2026-07-28` still
+> returns 404 as of July 28, 2026 — the final text is served under
+> `/specification/draft/`. That is what the tool and this README cite.
 
 ```bash
 npx @booyaka/mcp-vet .
@@ -67,17 +73,36 @@ Note it catches the `sessionIdGenerator` session usage — the real signal in SD
 | `MCP_SESSION_ID` | `Mcp-Session-Id` header / `mcpSessionId` variable / client-side session ownership (`sessionId` passed to or read from a client transport) |
 | `INITIALIZE_HANDLER` | `initialize` / `notifications/initialized` handler registration |
 | `ERROR_CODE_32002` | the numeric error code `-32002` |
+| `ERROR_CODE_RENUMBERED` | `-32001` / `-32003` / `-32004` **in a JSON-RPC error `code` position** → `-32020` / `-32021` / `-32022` |
 | `TASKS_LEGACY` | `tasks/get` · `tasks/update` · `tasks/cancel` legacy method strings |
 | `TASKS_LIST_REMOVED` | `tasks/list` — removed entirely (no replacement listing method) |
 | `TASKS_RESULT_REMOVED` | `tasks/result` — removed; poll with `tasks/get` instead (SEP-2663) |
+| `PING_REMOVED` | `ping` in MCP method-registration context · `PingRequestSchema` · Python `types.PingRequest` |
+| `RESOURCE_SUBSCRIBE_REMOVED` | `resources/subscribe` · `resources/unsubscribe` · `SubscribeRequestSchema` · `UnsubscribeRequestSchema` → `subscriptions/listen` |
+| `ROOTS_LIST_CHANGED_REMOVED` | `notifications/roots/list_changed` · `RootsListChangedNotificationSchema` |
+| `LOGGING_SETLEVEL_REMOVED` | `logging/setLevel` · `SetLevelRequestSchema` |
+| `SSE_RESUMABILITY_REMOVED` | `Last-Event-ID` / `lastEventId` · `eventStore` · `resumptionToken` / `onresumptiontoken` on a Streamable HTTP transport |
+| `ELICITATION_COMPLETE_REMOVED` | `notifications/elicitation/complete` · `elicitationId` |
 
-### 🟡 DEPRECATED (warns only — exit code 0, 12-month grace period)
+> **The two reclassified rules matter most if you scanned with ≤ 0.8.0.**
+> `logging/setLevel` and `notifications/roots/list_changed` used to report as
+> DEPRECATED warnings (exit 0) under `LOGGING_CAP` / `ROOTS_CAP`. The final
+> changelog *removes* them — *"Remove `ping`, `logging/setLevel`, and
+> `notifications/roots/list_changed`"* — so they now fail the build, while the
+> `logging` / `roots` **capability keys** stay DEPRECATED. A test locks that
+> split so it can't regress.
 
-| ID | Pattern |
-| --- | --- |
-| `ROOTS_CAP` | `roots` capability |
-| `SAMPLING_CAP` | `sampling` capability |
-| `LOGGING_CAP` | `logging` capability |
+### 🟡 DEPRECATED (warns only — exit code 0)
+
+Removal windows come from the [deprecated-features registry](https://modelcontextprotocol.io/specification/draft/deprecated), quoted verbatim in each finding — not a hardcoded grace period.
+
+| ID | Pattern | Earliest removal (registry) |
+| --- | --- | --- |
+| `ROOTS_CAP` | `roots` capability | first revision released on or after 2027-07-28 |
+| `SAMPLING_CAP` | `sampling` capability | first revision released on or after 2027-07-28 |
+| `LOGGING_CAP` | `logging` capability | first revision released on or after 2027-07-28 |
+| `INCLUDE_CONTEXT_VALUES` | `includeContext` set to `"thisServer"` / `"allServers"` | follows Sampling |
+| `OAUTH_DCR` | RFC7591 dynamic client registration (`registration_endpoint`, …) → Client ID Metadata Documents | first revision released on or after 2027-07-28 |
 
 ### Confidence
 
@@ -166,7 +191,77 @@ switch (method) {
 // the 2026-07-28 schema.
 ```
 
-### 5. `tasks/list` — removed entirely
+### 5. `ping`, `logging/setLevel`, `notifications/roots/list_changed` — removed
+
+> *"Remove `ping`, `logging/setLevel`, and `notifications/roots/list_changed`. Log level is now set per-request via `io.modelcontextprotocol/logLevel` in `_meta`; servers MUST NOT emit `notifications/message` for requests that did not include this field."*
+
+```ts
+// ❌ before
+server.setRequestHandler(PingRequestSchema, async () => ({}));
+server.setRequestHandler(SetLevelRequestSchema, async (r) => setLevel(r.params.level));
+server.notification({ method: 'notifications/roots/list_changed' });
+
+// ✅ after — ping is gone (liveness is transport-level); read the level per request
+function handle(req) {
+  const level = req.params?._meta?.['io.modelcontextprotocol/logLevel'];
+  // ...and emit notifications/message ONLY when that field was present
+}
+```
+
+A `/ping` health-check route, a bare `'ping'` string, or a tool merely *named*
+`ping` is **not** flagged — the rule requires MCP method-registration context.
+
+### 6. `resources/subscribe` / `resources/unsubscribe` → `subscriptions/listen`
+
+> *"Replace the HTTP GET endpoint and `resources/subscribe`/`resources/unsubscribe` with `subscriptions/listen`: a single long-lived POST-response stream for opted-in server-to-client change notifications."*
+
+```ts
+// ❌ before
+server.setRequestHandler(SubscribeRequestSchema, async ({ params }) => subscribe(params.uri));
+
+// ✅ after — the client opts into specific types; the server tags notifications
+{
+  method: 'subscriptions/listen',
+  params: { subscriptions: { toolsListChanged: true, resourcesListChanged: true } },
+}
+// every notification on that stream carries
+// _meta['io.modelcontextprotocol/subscriptionId']
+```
+
+### 7. SSE resumability — removed
+
+> *"Remove SSE stream resumability and message redelivery (the `Last-Event-ID` header and SSE event IDs) from the Streamable HTTP transport. A broken response stream loses the in-flight request; clients MUST re-issue it as a new request with a new request ID."*
+
+```ts
+// ❌ before
+const transport = new StreamableHTTPServerTransport({ eventStore });
+const lastEventId = req.headers['last-event-id'];
+
+// ✅ after — no event store, no resumption token; retry as a NEW request id
+const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+```
+
+A non-MCP SSE client that legitimately uses `Last-Event-ID` stays clean — the
+rule is gated on MCP context (locked by `test/fixtures/negatives/sse-client.ts`).
+
+### 8. Error codes `-32001` / `-32003` / `-32004` → `-32020` / `-32021` / `-32022`
+
+> *"`-32000` to `-32019` remains implementation-defined (existing SDK usage is grandfathered), `-32020` to `-32099` is reserved for the MCP specification. Renumber the error codes introduced in this draft accordingly — `HeaderMismatch` `-32001` → `-32020`, `MissingRequiredClientCapability` `-32003` → `-32021`, `UnsupportedProtocolVersion` `-32004` → `-32022`."*
+
+```ts
+// ❌ before
+return { error: { code: -32004, message: 'Unsupported protocol version' } };
+
+// ✅ after
+return { error: { code: -32022, message: 'Unsupported protocol version' } };
+```
+
+Because `-32000..-32019` is grandfathered, this only fires in a JSON-RPC error
+`code` position (a `code:` key, an `*Error(...)` construction, or a comparison
+against `code`) — an implementation-defined `-32001` constant elsewhere is left
+alone. Mechanical, so **`--fix` rewrites all three** alongside `-32002`.
+
+### 9. `tasks/list` — removed entirely
 
 > *"The `tasks/list` method is removed — it was unsafe once protocol-level sessions were gone. There is no replacement listing method."*
 
@@ -199,7 +294,7 @@ Static analysis proves known legacy patterns are *absent* from your source. Only
 npx @booyaka/mcp-vet fixtures ./mcp-fixtures
 ```
 
-writes nine ready-to-fire JSON fixtures plus a `CHECKLIST.md`, covering the runtime behaviors a linter cannot see:
+writes eleven ready-to-fire JSON fixtures plus a `CHECKLIST.md`, covering the runtime behaviors a linter cannot see:
 
 1. `server/discover` replaces the initialize handshake
 2. per-request `_meta` (protocolVersion, clientInfo, capabilities) — including explicit refusal when `_meta` is missing
@@ -210,6 +305,8 @@ writes nine ready-to-fire JSON fixtures plus a `CHECKLIST.md`, covering the runt
 7. retry against a different server instance (no sticky in-memory state)
 8. `tools/list` cache invalidation
 9. downgrade/refusal: old-revision requests get an explicit error, never silent acceptance under the wrong semantics
+10. `subscriptions/listen` opt-in: the client opts into specific types, the server acknowledges and tags notifications with `io.modelcontextprotocol/subscriptionId`, and `resources/subscribe` now answers `-32601`
+11. MRTR: the server returns `resultType: "input_required"` with `inputRequests`, and the client retries the **original** request carrying `inputResponses`
 
 Each fixture is a plain JSON description (`send` headers + JSON-RPC body, `expect` notes) you can replay with curl, supertest, pytest + httpx, or any HTTP harness. The checklist also spells out the **dual-version rollout matrix** — run both `2025-11-25` and `2026-07-28` paths until your clients have all moved — and a **client-side assumptions** list (session resume, per-request `_meta`, retries landing on other instances, `tools/list` revalidation).
 
@@ -266,7 +363,7 @@ The stateless verdict is **cross-checked** before it becomes a violation: `requi
 
 ### `--spec 2026-07-28` — the extra compliance suite
 
-`--spec` is a shorthand for `--spec-version` that **also** runs six additional wire-level checks *on top of* the ones above. `--spec 2026-07-28` vets against the new revision **and** adds the suite; plain `--spec-version 2026-07-28` is unchanged and never runs it, so existing CI invocations keep their exact behavior.
+`--spec` is a shorthand for `--spec-version` that **also** runs ten additional wire-level checks *on top of* the ones above. `--spec 2026-07-28` vets against the new revision **and** adds the suite; plain `--spec-version 2026-07-28` is unchanged and never runs it, so existing CI invocations keep their exact behavior.
 
 ```bash
 # full readiness AND the extra compliance suite
@@ -281,8 +378,15 @@ npx @booyaka/mcp-vet probe --spec 2026-07-28 node ./dist/server.js
 | `deprecated-sampling` | 🟡 WARN | observes a server-initiated `sampling/createMessage` request. Sampling is deprecated in 2026-07-28 and **eligible for removal July 2027** — migrate to a direct LLM provider API |
 | `deprecated-roots` | 🟡 WARN | flags a `roots/list` that returns a result — the roots capability is deprecated |
 | `deprecated-logging` | 🟡 WARN | observes a server-emitted `notifications/message` — the MCP logging protocol is deprecated; migrate to stderr (stdio) or OpenTelemetry |
+| `missing-result-type` | 🔴 ERROR | every result must carry `resultType` — `"complete"` or `"input_required"` (SEP-2322). Inspects `tools/list` plus `prompts/list`, `resources/list`, `resources/templates/list`; endpoints the server doesn't implement are skipped |
+| `missing-cacheable-fields` | 🟡 WARN | the cacheable list results must carry `ttlMs` and a `cacheScope` of `"public"` or `"private"` (SEP-2549) |
+| `legacy-error-code-renumbered` | 🔴 ERROR | sends an unsupported `protocolVersion` and flags a server still answering `-32001` / `-32003` / `-32004` instead of `-32020` / `-32021` / `-32022` |
+| `ping-still-answered` | 🟡 WARN | sends a `ping` and flags a server that returns a **result** instead of `-32601` — the method is removed |
 
-The two `stateless-*` checks are cross-checked the same way the rest of the probe is: a server that answers a stateless, session-less, handshake-less `tools/list` passes both; one that rejects it is classified by *why* — a `session` error trips `stateless-no-session`, an `uninitialized` error trips `stateless-no-init` (a session rejection trips both, since a sessionful server is also not answering the first request directly). The two `deprecated-sampling` / `deprecated-logging` checks watch for server→client traffic for a short window (up to the spec's 5 s, bounded by `--timeout`) and report only what the server actually sends — a server that never samples or logs stays clean. The suite runs on its own fresh connection after the standard probe completes, so the ERROR checks above are unaffected.
+Every one of these is cross-checked the same way the rest of the probe is — an
+inconclusive outcome is reported as a note, never as a violation, and a dead or
+non-MCP server is an operational error (exit 2). The two `stateless-*` checks
+specifically: a server that answers a stateless, session-less, handshake-less `tools/list` passes both; one that rejects it is classified by *why* — a `session` error trips `stateless-no-session`, an `uninitialized` error trips `stateless-no-init` (a session rejection trips both, since a sessionful server is also not answering the first request directly). The two `deprecated-sampling` / `deprecated-logging` checks watch for server→client traffic for a short window (up to the spec's 5 s, bounded by `--timeout`) and report only what the server actually sends — a server that never samples or logs stays clean. The suite runs on its own fresh connection after the standard probe completes, so the ERROR checks above are unaffected.
 
 Probe findings use the same report formats as the scan: `--json` (machine-readable array on stdout) and `--sarif [file]` (SARIF 2.1.0 — `ERROR` maps to `error`, `WARN` to `warning`), plus `--fail-on breaking|any|none` (default `breaking`: exit 1 only on `ERROR`), `--timeout <ms>` (default 8000, also the hang-detection window), `--quiet`, and `--color`/`--no-color`.
 
@@ -291,6 +395,39 @@ Try it against the official reference server — the July 2026 `@modelcontextpro
 ```bash
 npx @booyaka/mcp-vet probe --spec-version 2026-07-28 npx -y @modelcontextprotocol/server-everything stdio
 ```
+
+## Where mcp-vet fits (and where it doesn't)
+
+**The probe half is not novel, and this README won't pretend otherwise.** Other
+tools already check a running server over the wire, and some of them already
+cover ground the `--spec 2026-07-28` suite covers:
+
+| Tool | What it is | Overlap |
+| --- | --- | --- |
+| [`@modelcontextprotocol/conformance`](https://github.com/modelcontextprotocol/conformance) — `npx @modelcontextprotocol/conformance server --url <url>` | The **official** wire test suite. Its README notes that *"dated versions through 2025-11-25 use the stateful lifecycle (initialize handshake), while the 2026 draft (2026-07-28) uses the stateless lifecycle (per-request `_meta`)"* | The authority on wire conformance. If you can boot your server, **run it** — it is more complete at the protocol level than any third-party probe, mcp-vet's included |
+| [`mcp-spec-check`](https://www.npmjs.com/package/mcp-spec-check) (Roee-Tsur) | Zero-install black-box URL probe for 2026-07-28 readiness | Already ships cache-metadata, MRTR and resources-subscribe checks — genuinely prior art for three of mcp-vet's ten `--spec` checks |
+| [`mcpfit`](https://github.com/printemps-tokyo/mcpfit) (printemps-tokyo) | Go CLI auditing a running server against the stateless spec | Already ships a `cache-hints` check for `ttlMs`/`cacheScope` |
+
+**The uncontested claim is the other half: static source analysis.** mcp-vet
+reads your *source* — TypeScript/JavaScript via ts-morph, Python via a bundled
+`ast` script — and reports `file:line:col`, SARIF, and `--fix`. That means:
+
+- **It runs in CI on a pull request**, before anything is deployed, without
+  booting a server, provisioning a URL, or having a working build.
+- **It points at the line to change**, not at a wire symptom. A probe can tell
+  you a result lacks `resultType`; only source analysis tells you
+  `src/handlers/tools.ts:142` is the return statement that omits it.
+- **It fixes what is mechanical** — `--fix` rewrites `-32002 → -32602` and the
+  three renumbered codes in place, with `--dry-run` to preview.
+- **It covers code paths a probe never reaches** — an error branch that fires
+  once a month, a client-side session resume, a handler registered but not
+  exercised by a smoke test.
+
+The two halves are complements, not competitors. The honest recommendation:
+**static scan in CI on every PR (mcp-vet), official conformance suite against a
+deployed instance before release.** mcp-vet ships the probe so you can get a
+first signal without wiring up a second tool — not as a replacement for the
+official suite.
 
 ## Usage
 
@@ -444,7 +581,7 @@ Some linters let you "grandfather" existing findings so CI stays green. `mcp-vet
 
 - **TypeScript / JavaScript** — parsed with [`ts-morph`](https://ts-morph.com); the analyzer walks the AST and emits normalized tokens (string literals, signed numeric literals, identifiers, object keys) annotated with structural capability context and registration context.
 - **Python** — a bundled script (`dist/python/mcp_ast_scan.py`) runs `ast.parse` + a context-tracking walk in a subprocess (chunked for large repos) and emits the same token shape (with character-accurate columns). When no interpreter exists, a regex fallback covers the deterministic rules.
-- A single rule engine applies all 9 rules to those tokens, so TS and Python behave identically. Findings are de-duplicated per (line, column, rule) and can be suppressed inline.
+- A single rule engine applies all 18 rules to those tokens, so TS and Python behave identically. Findings are de-duplicated per (line, column, rule) and can be suppressed inline.
 
 It matches the ways real servers are actually written, not just raw method strings:
 
@@ -455,7 +592,7 @@ It matches the ways real servers are actually written, not just raw method strin
 - **aliased imports** — `import { InitializeRequestSchema as Init }` (TS) and `from mcp.types import RootsCapability as RC` (Python) are resolved back to their canonical names, so both the import line and the aliased usage sites are flagged. Namespace access (`types.InitializeRequestSchema`) is matched too.
 - **client-side session ownership** — a client transport constructed with a real `sessionId`/`session_id`, or a read of `transport.sessionId`; the migrated `sessionId: undefined` / `session_id=None` forms are recognized as benign.
 
-**Measured, not vibes:** scanned against the official MCP reference servers and both SDK example suites at pinned commits — 447 files / ~44k LOC — every finding manually labeled: **105 findings, 104 true positives, 1 false positive**. Corpus, commit SHAs, per-pattern counts, labeled negatives, and the recall discussion are in [BENCHMARK.md](./BENCHMARK.md).
+**Measured, not vibes:** scanned against the official MCP reference servers and both SDK example suites at pinned commits — 447 files / ~44k LOC — findings labeled against source: **243 findings, 241 true positives, 2 false positives (0.8%)** with the 18-rule final-changelog engine (the v0.4.0 9-rule run was 105/104/1 on the same corpus; the jump is the final removals firing on the SDKs' own pre-final examples). Corpus, commit SHAs, per-pattern counts, labeled negatives, and the recall discussion are in [BENCHMARK.md](./BENCHMARK.md).
 
 ### Known limitations
 
@@ -506,10 +643,10 @@ Also exported: `renderJson` / `renderMarkdown` / `renderSarif`, `RULES`, and the
 ```bash
 npm install      # installs deps and builds (via prepare)
 npm run build    # tsc -> dist/ + copies the Python script
-npm test         # builds, then runs the Node.js built-in test runner (62 tests)
+npm test         # builds, then runs the Node.js built-in test runner (78 tests)
 ```
 
-Test fixtures live in `test/fixtures/` (dirty TS + Python servers, a `clean/` server with zero violations, `negatives/` true-negatives, a `confidence/` gradient, and `suppress/` cases). Runtime-probe fixtures live in `test/probe-fixtures/` — minimal stdio + Streamable-HTTP MCP servers: one returning draft-07 schemas, one requiring the initialize handshake, one fully migrated 2026-07-28-native (stateless + `server/discover` + `-32602`), and a `server-partial.mjs` with one deliberate migration defect per mode (`legacy-error-code` / `no-discover` / `bad-discover`).
+Test fixtures live in `test/fixtures/` (dirty TS + Python servers including `dirty/` with one instance of every final-changelog pattern, a `clean/` server with zero violations, `negatives/` true-negatives, a `confidence/` gradient, and `suppress/` cases). Runtime-probe fixtures live in `test/probe-fixtures/` — minimal stdio + Streamable-HTTP MCP servers: one returning draft-07 schemas, one requiring the initialize handshake, one fully migrated 2026-07-28-native (stateless + `server/discover` + `-32602`), and a `server-partial.mjs` with one deliberate migration defect per mode (`legacy-error-code` / `no-discover` / `bad-discover`).
 
 ## License
 

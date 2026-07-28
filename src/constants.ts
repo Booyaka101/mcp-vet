@@ -22,7 +22,9 @@ export const JSON_SCHEMA_2020_12 = 'https://json-schema.org/draft/2020-12/schema
  * than implying "clean === fully migrated".
  */
 export const MANUAL_REVIEW: string[] = [
-  'the long-lived server→client SSE push channel is removed (a server may only send requests while handling one)',
+  'the long-lived server→client SSE push channel is removed (a server may only send requests while handling one); subscriptions/listen replaces it',
+  'every result must carry `resultType`, and the cacheable list results must carry `ttlMs` + `cacheScope` — `mcp-vet probe --spec 2026-07-28` checks a running server',
+  'MRTR replaces server-initiated requests: return resultType "input_required" with inputRequests; the client retries with inputResponses (`mcp-vet fixtures` emits a fixture)',
   'Streamable HTTP now requires Mcp-Method and Mcp-Name headers that mirror the JSON-RPC body',
   'auth hardening: validate the RFC 9207 `iss` param, send OIDC `application_type`, bind tokens to the issuer',
   'tool inputSchema/outputSchema may now be full JSON Schema 2020-12 (do not auto-dereference external $ref) — `mcp-vet probe <server>` checks the dialect of a running server',
