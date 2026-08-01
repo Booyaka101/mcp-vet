@@ -555,6 +555,25 @@ const issAware = (lower: string): boolean =>
 //                deriveApplicationType(clientMetadata.redirect_uris)`
 // Only a HAND-ROLLED registration POST — one that never routes through these —
 // can actually put a body on the wire without the parameter.
+// SEP-2468/837/2352 all constrain what an MCP **client** does. Code implementing
+// the authorization SERVER side — a registration endpoint storing an incoming
+// client, a token issuer — has `client_name`/`redirect_uris`/`client_id` all
+// over it and must not be flagged. These signals only appear on the server side:
+// hashing a secret you ISSUED, reading a registration OUT of a request body, or
+// importing the SDK's server-auth provider surface.
+const SERVER_AUTH_CONTEXT_RE =
+  /client_secret_hash|hashed_client_secret|mcp\.server\.auth|OAuthAuthorizationServerProvider|AuthorizationServerProvider|register_client_endpoint|(?:body|payload|request|req)\s*(?:\.\s*get\s*\(\s*|\[\s*)['"]client_(?:name|id)['"]/i;
+
+// The token-request `grant_type` (singular) — the actual code redemption. NOT
+// `grant_types` (plural), which is DCR *metadata* declaring what a client
+// supports. Both contain the literal 'authorization_code', so anchoring an
+// AUTH_ISS_UNVALIDATED finding needs to tell them apart or it reports the
+// registration body's line instead of the line that redeems the code.
+const GRANT_TYPE_SINGULAR_RE = /\bgrant_type\b/;
+// Lines that mark the registration REQUEST, used to anchor the DCR finding at
+// the body actually posted rather than the first redirect_uris-shaped dict.
+const REGISTRATION_SITE_RE = /registration_endpoint|registration_request|register_client|\bregister\b/i;
+
 const SDK_SUPPLIES_APP_TYPE = new Set([
   'OAuthClientMetadata',
   'OAuthClientMetadataBase',
@@ -630,11 +649,33 @@ export function applyRules(
   const capLines: number[] = [];
   const includeContextLines: number[] = [];
   let mcpContext = false;
+  // Anchor-selection and client/server discrimination for the auth rules.
+  const grantTypeLines: number[] = [];
+  const registrationLines: number[] = [];
+  let serverAuthContext = false;
   for (let i = 0; i < lines.length; i++) {
     if (CAP_RE.test(lines[i])) capLines.push(i + 1);
     if (INCLUDE_CONTEXT_RE.test(lines[i])) includeContextLines.push(i + 1);
     if (!mcpContext && MCP_CONTEXT_RE.test(lines[i])) mcpContext = true;
+    if (GRANT_TYPE_SINGULAR_RE.test(lines[i])) grantTypeLines.push(i + 1);
+    if (REGISTRATION_SITE_RE.test(lines[i])) registrationLines.push(i + 1);
+    if (!serverAuthContext && SERVER_AUTH_CONTEXT_RE.test(lines[i])) serverAuthContext = true;
   }
+  /** The candidate closest to any marker line; the first candidate if none. */
+  const anchorNearest = (candidates: Token[], markers: number[]): Token | null => {
+    if (candidates.length === 0) return null;
+    if (markers.length === 0) return candidates[0];
+    let best = candidates[0];
+    let bestDist = Infinity;
+    for (const c of candidates) {
+      const d = Math.min(...markers.map((m) => Math.abs(m - c.line)));
+      if (d < bestDist) {
+        bestDist = d;
+        best = c;
+      }
+    }
+    return best;
+  };
   const nearCapabilities = (line: number) =>
     capLines.some((cl) => Math.abs(cl - line) <= 5);
   const nearIncludeContext = (line: number) =>
@@ -643,10 +684,13 @@ export function applyRules(
   // File-level signals for the three auth-hardening rules (0.10.0). Like
   // SSE_RESUMABILITY_REMOVED, they are gated on MCP file context so a plain
   // OAuth client in an unrelated file stays clean.
-  let authCodeToken: Token | null = null; // grant_type 'authorization_code' redemption
+  // Candidate anchors are collected, not first-wins: a file typically contains
+  // several 'authorization_code' literals and several redirect_uris dicts, and
+  // the finding must point at the one that actually redeems / actually posts.
+  const authCodeTokens: Token[] = [];
   let sawGrantType = false;
   let sawIss = false;
-  let dcrBodyToken: Token | null = null; // redirect_uris in a registration body
+  const dcrBodyTokens: Token[] = [];
   let sawClientName = false;
   let sawApplicationType = false;
 
@@ -787,12 +831,11 @@ export function applyRules(
     // contains, which no single token can decide).
     {
       const norm = lower.replace(/[-_]/g, '');
-      if (t.kind === 'string' && v === 'authorization_code' && !authCodeToken) authCodeToken = t;
+      if (t.kind === 'string' && v === 'authorization_code') authCodeTokens.push(t);
       if (norm === 'granttype') sawGrantType = true;
       if (issAware(lower)) sawIss = true;
       if (norm === 'redirecturis' && (t.kind === 'key' || t.kind === 'string')) {
-        // prefer a structural key over a bare string mention as the anchor
-        if (!dcrBodyToken || (t.kind === 'key' && dcrBodyToken.kind !== 'key')) dcrBodyToken = t;
+        dcrBodyTokens.push(t);
       }
       if (norm === 'clientname') sawClientName = true;
       if (norm === 'applicationtype') sawApplicationType = true;
@@ -802,7 +845,7 @@ export function applyRules(
 
     // Rule 8k — a credential-store write whose key the analyzer classified as
     // NOT issuer-derived (bare constant, or a server/resource URL variable).
-    if (t.credKey && mcpContext) {
+    if (t.credKey && mcpContext && !serverAuthContext) {
       push('AUTH_CREDENTIALS_NOT_ISSUER_KEYED', t, 'medium');
     }
 
@@ -855,8 +898,12 @@ export function applyRules(
   // but never reads or compares any iss/issuer value. Anchored at the
   // 'authorization_code' literal. AST analyzers only — the regex fallback can't
   // see unquoted `params.iss` reads, so it would over-report.
+  // Anchored at the 'authorization_code' literal nearest a singular `grant_type`
+  // — the line that redeems — not the DCR body's `grant_types` declaration.
+  const authCodeToken = anchorNearest(authCodeTokens, grantTypeLines);
   if (
     mcpContext &&
+    !serverAuthContext &&
     opts.source !== 'regex' &&
     authCodeToken &&
     sawGrantType &&
@@ -868,7 +915,10 @@ export function applyRules(
   // Rule 8j — AUTH_DCR_NO_APPLICATION_TYPE (SEP-837). A registration body
   // (redirect_uris + client_name) with no application_type anywhere in the
   // file. Anchored at the redirect_uris key.
-  if (mcpContext && dcrBodyToken && sawClientName && !sawApplicationType) {
+  // Anchored at the redirect_uris nearest the registration REQUEST, so the
+  // finding points at the body that is actually posted.
+  const dcrBodyToken = anchorNearest(dcrBodyTokens, registrationLines);
+  if (mcpContext && !serverAuthContext && dcrBodyToken && sawClientName && !sawApplicationType) {
     push('AUTH_DCR_NO_APPLICATION_TYPE', dcrBodyToken, 'medium');
   }
 

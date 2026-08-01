@@ -326,6 +326,10 @@ class Scanner:
         text = _expr_text(s)
         if not text or ISSUERISH.search(text):
             return
+        # `data["client_secret"] = ...` builds a token-REQUEST body; the key is
+        # the OAuth field name, not a store key. Never a credential store.
+        if CREDENTIALISH.search(text):
+            return
         if isinstance(s, ast.Constant) and isinstance(s.value, str):
             self.tokens.append(
                 {"kind": "string", "value": s.value, "line": s.lineno, "col": self._col(s), "credKey": True}

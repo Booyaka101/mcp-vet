@@ -669,7 +669,7 @@ Also exported: `renderJson` / `renderMarkdown` / `renderSarif`, `RULES`, and the
 ```bash
 npm install      # installs deps and builds (via prepare)
 npm run build    # tsc -> dist/ + copies the Python script
-npm test         # builds, then runs the Node.js built-in test runner (88 tests)
+npm test         # builds, then runs the Node.js built-in test runner (92 tests)
 ```
 
 Test fixtures live in `test/fixtures/` (dirty TS + Python servers including `dirty/` with one instance of every final-changelog pattern, a `clean/` server with zero violations, `negatives/` true-negatives incl. the plain-OAuth pair locking the auth-rule context gate, an `auth/` worked example + its migrated twin, a `confidence/` gradient, and `suppress/` cases). Runtime-probe fixtures live in `test/probe-fixtures/` — minimal stdio + Streamable-HTTP MCP servers: one returning draft-07 schemas, one requiring the initialize handshake, one fully migrated 2026-07-28-native (stateless + `server/discover` + `-32602`), a `server-partial.mjs` with one deliberate migration defect per mode (`legacy-error-code` / `no-discover` / `bad-discover`), and the HTTP fixture's `auth-legacy` / `auth-migrated` modes serving RFC 8414 metadata for the two auth checks.

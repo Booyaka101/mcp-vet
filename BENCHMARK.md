@@ -23,6 +23,46 @@ enabled, default confidence (`low`), on 2026-07-23:
 File counts are candidate files (`.ts/.tsx/.js/.mjs/.cjs/.py`) under the
 scanned roots, excluding `node_modules`.
 
+## Validation against real-world hand-rolled OAuth clients (v0.10.3)
+
+The pinned corpus above is almost entirely **SDK-routed** code, so it cannot
+exercise the auth-hardening rules: the SDKs satisfy the requirements for you.
+The rules exist for clients that do OAuth **by hand**, so that population was
+sampled separately — three MCP OAuth clients found via GitHub code search
+(`mcp-use/mcp-use`, `greeves89/AI-Employee`, `ogx-ai/ogx`), each read against
+source.
+
+| | v0.10.2 | v0.10.3 |
+| --- | --- | --- |
+| Findings | 4 | 2 |
+| True positives | 2 (both on the **wrong line**) | **2, correctly anchored** |
+| False positives | 2 | **0** |
+
+The exercise found three defects the 447-file corpus never surfaced:
+
+1. **Wrong anchor line.** `AUTH_ISS_UNVALIDATED` reported the DCR body's
+   `grant_types: ["authorization_code"]` at `ogx…:85`; the code is actually
+   redeemed at `:143`. `AUTH_DCR_NO_APPLICATION_TYPE` reported an unposted
+   local dict at `:58` instead of the posted body at `:83`. Both now anchor
+   correctly.
+2. **Server-side DCR read as client-side.** `AI-Employee`'s registration
+   *endpoint* — which receives and stores an incoming client — was flagged
+   under rules that constrain clients.
+3. **Request-body population read as a credential store.**
+   `data["client_secret"] = self.client_secret` at `ogx…:150`.
+
+`ogx-ai/ogx` is the first real-world **`AUTH_ISS_UNVALIDATED` true positive**:
+a hand-rolled `requests.post(token_endpoint, data={"grant_type":
+"authorization_code", ...})` with no `iss` or `issuer` token anywhere in the
+file — precisely the SEP-2468 MUST. The other two clients are `iss`-aware (12
+and 9 mentions) and correctly stay clean.
+
+Sample size is three files, so this is not a precision *rate* — it is evidence
+that the rules work on the population they target, and that the SDK-heavy
+corpus was systematically blind to a whole class of defect. Both wild false
+positives are now regression fixtures (`negatives/server_dcr_handler.py`,
+`auth/handrolled-client.py`).
+
 ## Results — v0.10.2 (21-rule engine, auth-hardening rules added)
 
 Re-run 2026-08-01 with `mcp-vet` v0.10.2 on the SAME pinned corpus:

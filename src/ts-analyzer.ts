@@ -328,6 +328,9 @@ export function analyzeTs(absPath: string, text: string): Token[] {
     const emitCredKey = (keyNode: Node) => {
       const keyText = keyNode.getText();
       if (ISSUERISH.test(keyText)) return; // issuer-keyed — the migrated form
+      // `data['client_secret'] = ...` builds a token-REQUEST body; the key is
+      // the OAuth field name, not a store key. Never a credential store.
+      if (CREDENTIALISH.test(keyText)) return;
       const k = keyNode.getKind();
       const { line, col } = posOf(keyNode);
       if (k === SyntaxKind.StringLiteral || k === SyntaxKind.NoSubstitutionTemplateLiteral) {

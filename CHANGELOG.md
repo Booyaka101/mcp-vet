@@ -4,6 +4,50 @@ All notable changes to `mcp-vet` are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.3]
+
+Precision fixes from the first real-world hand-rolled OAuth clients. The 447-file
+benchmark corpus is almost entirely SDK-routed, so it surfaced none of these —
+they only appeared once the auth rules met code that does OAuth by hand, which is
+the population they exist for.
+
+### Fixed
+
+- **Findings now anchor at the line that matters.** A real client contains
+  several `authorization_code` literals and several `redirect_uris` dicts; the
+  rules took the first of each. `AUTH_ISS_UNVALIDATED` reported the DCR body's
+  `grant_types: ["authorization_code"]` declaration instead of the singular
+  `grant_type` line that actually redeems the code (58 lines away in the wild
+  sample), and `AUTH_DCR_NO_APPLICATION_TYPE` reported an unposted local dict
+  instead of the body handed to the registration endpoint. For a tool whose
+  claim is `file:line:col`, sending you to the wrong line is a defect in the
+  product, not a rounding error.
+- **An authorization SERVER implementing DCR is no longer treated as a client.**
+  SEP-2468/837/2352 all constrain what an MCP *client* does, but a registration
+  endpoint that receives and stores a client has `client_name`, `redirect_uris`
+  and `client_id` throughout. Server-side context (hashing a secret you issued,
+  reading a registration out of a request body, the SDK's server-auth provider
+  surface) now suppresses all three rules. This is the third instance of one
+  root cause — the rules could not tell whose side of the exchange they were
+  reading — and it is now handled once rather than patched per-rule.
+- **Filling a token-request body is not a credential store.**
+  `data["client_secret"] = self.client_secret` populates an outgoing request;
+  the key is the OAuth field name. A subscript key that is itself a credential
+  field name no longer counts as a store key.
+
+### Verified against real code
+
+Three hand-rolled MCP OAuth clients found via GitHub code search (saved as
+reduced fixtures). Before: 4 findings, 2 true positives, 2 false positives, and
+both true positives on the wrong line. After: **2 findings, 2 true positives,
+0 false positives, both correctly anchored** — including the first real-world
+`AUTH_ISS_UNVALIDATED` true positive, a client that redeems an authorization
+code with no `iss` handling anywhere in the file.
+
+Benchmark corpus re-run and byte-diffed: **243 findings, unchanged, zero drift**
+— these fixes touch only code shapes the corpus does not contain. 92 tests
+(was 90).
+
 ## [0.10.2]
 
 Closes the last counted false positive from the auth-hardening release.

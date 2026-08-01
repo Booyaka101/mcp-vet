@@ -367,6 +367,38 @@ test('REGRESSION (0.10.2): a server-side access-token cache is not a credential 
   );
 });
 
+test('REGRESSION (0.10.3): auth findings anchor at the line that matters, not the first match', () => {
+  // Reduced from a real hand-rolled client (ogx-ai/ogx). A file contains several
+  // 'authorization_code' literals and several redirect_uris dicts; the finding
+  // must point at the redemption / the posted body, not the first of each.
+  const { findings } = scanTarget('auth/handrolled-client.py');
+  const iss = findings.find((f) => f.patternId === 'AUTH_ISS_UNVALIDATED');
+  const dcr = findings.find((f) => f.patternId === 'AUTH_DCR_NO_APPLICATION_TYPE');
+  assert.ok(iss, `AUTH_ISS_UNVALIDATED present:\n${JSON.stringify(findings, null, 2)}`);
+  assert.match(iss.before, /"grant_type":/, 'anchored at the singular grant_type redemption');
+  assert.ok(!/grant_types/.test(iss.before), 'NOT the plural grant_types DCR declaration');
+  assert.ok(dcr, 'AUTH_DCR_NO_APPLICATION_TYPE present');
+  assert.match(dcr.before, /redirect_uris/, 'anchored at a redirect_uris line');
+  assert.ok(dcr.line > 20, `anchored at the POSTED body, not the earlier dict (got line ${dcr.line})`);
+  // The request-body population `data["client_secret"] = ...` is not a store.
+  assert.ok(
+    !findings.some((f) => f.patternId === 'AUTH_CREDENTIALS_NOT_ISSUER_KEYED'),
+    'filling a token-request body is not a credential store',
+  );
+});
+
+test('REGRESSION (0.10.3): an authorization SERVER implementing DCR is not a client', () => {
+  // SEP-837/2468/2352 constrain MCP *clients*. A registration endpoint that
+  // receives and stores a client has client_name/redirect_uris/client_id all
+  // over it. Reduced from greeves89/AI-Employee, which v0.10.2 flagged.
+  const { findings } = scanTarget('negatives/server_dcr_handler.py');
+  assert.equal(
+    findings.length,
+    0,
+    `server-side DCR handler must stay clean, got ${JSON.stringify(findings.map((f) => `${f.line}:${f.patternId}`))}`,
+  );
+});
+
 test('a plain OAuth client (no MCP context) stays clean — TS', () => {
   const { findings } = scanTarget('negatives/plain-oauth-client.ts');
   assert.equal(findings.length, 0, JSON.stringify(findings.map((f) => `${f.line}:${f.patternId}`)));
