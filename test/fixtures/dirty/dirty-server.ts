@@ -45,6 +45,32 @@ export function resume(req: any) {
   return transport.start({ resumptionToken: lastEventId }); // BREAKING
 }
 
+// AUTH_DCR_NO_APPLICATION_TYPE — a DCR body with redirect_uris + client_name
+// but no application_type (SEP-837), posted to the RFC7591 registration
+// endpoint (which itself fires OAUTH_DCR).
+export async function registerClient(metadata: any) {
+  const body = {
+    redirect_uris: ['http://127.0.0.1:33418/callback'], // DEPRECATED tier (medium)
+    client_name: 'dirty-fixture-client',
+  };
+  return fetch(metadata.registration_endpoint, { method: 'POST', body: JSON.stringify(body) }); // OAUTH_DCR
+}
+
+// AUTH_ISS_UNVALIDATED — redeems the authorization code without ever reading
+// or comparing iss (SEP-2468 / RFC 9207).
+export async function redeemCode(tokenEndpoint: string, code: string) {
+  return fetch(tokenEndpoint, {
+    method: 'POST',
+    body: new URLSearchParams({ grant_type: 'authorization_code', code }), // DEPRECATED tier (medium)
+  });
+}
+
+// AUTH_CREDENTIALS_NOT_ISSUER_KEYED — persisted under the SERVER url, not the
+// AS its registration came from (SEP-2352).
+export function persistCredentials(serverUrl: string, client_id: string, client_secret: string) {
+  store.set(serverUrl, { client_id, client_secret }); // DEPRECATED tier (medium)
+}
+
 // ELICITATION_COMPLETE_REMOVED — the notification and the correlation field.
 server.notification({ method: 'notifications/elicitation/complete', params: {} }); // BREAKING
 export const pendingElicitation = { elicitationId: 'elic-1', mode: 'url' }; // BREAKING (medium)

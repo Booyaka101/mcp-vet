@@ -30,7 +30,10 @@ export type PatternId =
   | 'SAMPLING_CAP'
   | 'LOGGING_CAP'
   | 'INCLUDE_CONTEXT_VALUES'
-  | 'OAUTH_DCR';
+  | 'OAUTH_DCR'
+  | 'AUTH_ISS_UNVALIDATED'
+  | 'AUTH_DCR_NO_APPLICATION_TYPE'
+  | 'AUTH_CREDENTIALS_NOT_ISSUER_KEYED';
 
 export const ALL_PATTERN_IDS: PatternId[] = [
   'MCP_SESSION_ID',
@@ -51,6 +54,9 @@ export const ALL_PATTERN_IDS: PatternId[] = [
   'LOGGING_CAP',
   'INCLUDE_CONTEXT_VALUES',
   'OAUTH_DCR',
+  'AUTH_ISS_UNVALIDATED',
+  'AUTH_DCR_NO_APPLICATION_TYPE',
+  'AUTH_CREDENTIALS_NOT_ISSUER_KEYED',
 ];
 
 /**
@@ -75,7 +81,10 @@ export type RuntimeRuleId =
   | 'missing-result-type'
   | 'missing-cacheable-fields'
   | 'legacy-error-code-renumbered'
-  | 'ping-still-answered';
+  | 'ping-still-answered'
+  // added in 0.10.0 — authorization-server metadata checks (auth hardening)
+  | 'dcr-still-advertised'
+  | 'auth-metadata-missing-iss';
 
 export const ALL_RUNTIME_RULE_IDS: RuntimeRuleId[] = [
   'json-schema-dialect',
@@ -92,6 +101,8 @@ export const ALL_RUNTIME_RULE_IDS: RuntimeRuleId[] = [
   'missing-cacheable-fields',
   'legacy-error-code-renumbered',
   'ping-still-answered',
+  'dcr-still-advertised',
+  'auth-metadata-missing-iss',
 ];
 
 /** Any violation id — static pattern or runtime probe category. */
@@ -147,6 +158,15 @@ export interface Token {
    * transport/client shaped. Raises SSE_RESUMABILITY_REMOVED to high confidence.
    */
   transportCtx?: boolean;
+  /**
+   * True when this token is the KEY under which client credentials
+   * (client_id/client_secret) are persisted, and that key is not derived from
+   * an issuer identifier — a bare string constant, or a variable named like a
+   * server/resource URL. SEP-2352 requires credentials to be keyed by the
+   * issuer. Guards AUTH_CREDENTIALS_NOT_ISSUER_KEYED; a key mentioning
+   * iss/issuer is never marked.
+   */
+  credKey?: boolean;
 }
 
 export interface Finding {

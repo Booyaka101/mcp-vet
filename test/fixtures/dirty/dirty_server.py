@@ -55,4 +55,24 @@ def discover_auth(metadata):
     return metadata["registration_endpoint"]
 
 
+def register_client(http, metadata):
+    # DEPRECATED: AUTH_DCR_NO_APPLICATION_TYPE — redirect_uris + client_name,
+    # no application_type (SEP-837).
+    body = {
+        "redirect_uris": ["http://127.0.0.1:33418/callback"],
+        "client_name": "dirty-fixture-client",
+    }
+    return http.post(metadata["registration_endpoint"], json=body)
+
+
+def redeem_code(http, token_endpoint, code):
+    # DEPRECATED: AUTH_ISS_UNVALIDATED — no iss read before redeeming (SEP-2468).
+    return http.post(token_endpoint, data={"grant_type": "authorization_code", "code": code})
+
+
+def persist_credentials(store, server_url, creds):
+    # DEPRECATED: AUTH_CREDENTIALS_NOT_ISSUER_KEYED — keyed by the server URL (SEP-2352).
+    store.set(server_url, {"client_id": creds["client_id"], "client_secret": creds["client_secret"]})
+
+
 ELICITATION = {"elicitationId": "elic-1"}  # BREAKING: ELICITATION_COMPLETE_REMOVED (field)

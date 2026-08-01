@@ -7,14 +7,15 @@
 
 **On July 28, 2026 the Model Context Protocol ships its `2026-07-28` specification as final** — and it removes several things that today's MCP servers rely on. `mcp-vet` is a zero-config CLI that scans your MCP server source (TypeScript, JavaScript, and Python) for the exact patterns that will break client interop on that date, and tells you what to change.
 
-- Final Key Changes list: <https://modelcontextprotocol.io/specification/draft/changelog>
-- Deprecated-features registry: <https://modelcontextprotocol.io/specification/draft/deprecated>
+- Final Key Changes list: <https://modelcontextprotocol.io/specification/2026-07-28/changelog>
+- Deprecated-features registry: <https://modelcontextprotocol.io/specification/2026-07-28/deprecated>
 - Release-candidate announcement: <https://blog.modelcontextprotocol.io/posts/2026-07-28-release-candidate/>
 - Every rule's source sentence, pinned verbatim: [docs/SPEC-2026-07-28.md](./docs/SPEC-2026-07-28.md)
 
-> **URL note.** `https://modelcontextprotocol.io/specification/2026-07-28` still
-> returns 404 as of July 28, 2026 — the final text is served under
-> `/specification/draft/`. That is what the tool and this README cite.
+> **URL note.** The dated permalink 404'd on release day (0.9.0 cited
+> `/specification/draft/`); it resolves as of 2026-08-01 and every rule docUrl
+> now cites it — a `/draft/` URL silently drifts at the next revision, and a
+> test asserts no rule cites one.
 
 ```bash
 npx @booyaka/mcp-vet .
@@ -60,7 +61,7 @@ sse-polling.ts:107:13    BREAKING   MCP_SESSION_ID [medium]
 6 finding(s): 5 BREAKING, 1 DEPRECATED
 ```
 
-Note it catches the `sessionIdGenerator` session usage — the real signal in SDK-based servers, which usually never write the literal `Mcp-Session-Id` string. And it stays quiet where it should: the `Mcp-Session-Id` mentioned in a *comment*, the `initialize` in a comment in `dual-era.ts`, and the `sampling/createMessage` in `sampling.ts` (which appears only in comments and behind the `requestSampling()` helper) are all left alone. That precision — structural AST checks, not text matching — is what keeps the noise down on a real codebase: **6 findings, 0 false positives on these files.** (Across the full labeled corpus it's 104/105 true positives — see [BENCHMARK.md](./BENCHMARK.md).)
+Note it catches the `sessionIdGenerator` session usage — the real signal in SDK-based servers, which usually never write the literal `Mcp-Session-Id` string. And it stays quiet where it should: the `Mcp-Session-Id` mentioned in a *comment*, the `initialize` in a comment in `dual-era.ts`, and the `sampling/createMessage` in `sampling.ts` (which appears only in comments and behind the `requestSampling()` helper) are all left alone. That precision — structural AST checks, not text matching — is what keeps the noise down on a real codebase: **6 findings, 0 false positives on these files.** (Across the full labeled corpus it's 244/247 true positives — see [BENCHMARK.md](./BENCHMARK.md).)
 
 ---
 
@@ -94,7 +95,7 @@ Note it catches the `sessionIdGenerator` session usage — the real signal in SD
 
 ### 🟡 DEPRECATED (warns only — exit code 0)
 
-Removal windows come from the [deprecated-features registry](https://modelcontextprotocol.io/specification/draft/deprecated), quoted verbatim in each finding — not a hardcoded grace period.
+Removal windows come from the [deprecated-features registry](https://modelcontextprotocol.io/specification/2026-07-28/deprecated), quoted verbatim in each finding — not a hardcoded grace period.
 
 | ID | Pattern | Earliest removal (registry) |
 | --- | --- | --- |
@@ -103,6 +104,19 @@ Removal windows come from the [deprecated-features registry](https://modelcontex
 | `LOGGING_CAP` | `logging` capability | first revision released on or after 2027-07-28 |
 | `INCLUDE_CONTEXT_VALUES` | `includeContext` set to `"thisServer"` / `"allServers"` | follows Sampling |
 | `OAUTH_DCR` | RFC7591 dynamic client registration (`registration_endpoint`, …) → Client ID Metadata Documents | first revision released on or after 2027-07-28 |
+
+Three more report at this exit-0 tier without being deprecations: the final
+changelog's **authorization-hardening MUSTs** (Minor changes 7/8/9). They are
+correctness requirements on code that still works, so they warn instead of
+failing the build — and all three are gated on file-level MCP context (like
+`SSE_RESUMABILITY_REMOVED`), so a plain OAuth client in an unrelated file
+stays clean (locked by `negatives/plain-oauth-client.ts` / `.py`):
+
+| ID | Fires when (in an MCP-context file) | Source |
+| --- | --- | --- |
+| `AUTH_ISS_UNVALIDATED` | an authorization-code redemption (`grant_type` `'authorization_code'`) with no `iss`/`issuer` read or comparison anywhere in the file — *"MCP clients MUST validate a present `iss` against the recorded issuer before redeeming the authorization code"* | [SEP-2468](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2468) / RFC 9207 |
+| `AUTH_DCR_NO_APPLICATION_TYPE` | a registration body (`redirect_uris` + `client_name`) with no `application_type` — *"Require MCP clients to specify an appropriate `application_type` during Dynamic Client Registration"*; the fix also points at Client ID Metadata Documents (DCR is Deprecated, PR #2858) | [SEP-837](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/837) |
+| `AUTH_CREDENTIALS_NOT_ISSUER_KEYED` | persisted `client_id`/`client_secret` stored under a bare constant key or a server/resource-URL variable — *"clients MUST key persisted credentials by the issuer identifier"*; an issuer-derived key is the migrated form | [SEP-2352](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2352) |
 
 ### Confidence
 
@@ -281,8 +295,13 @@ case 'tasks/list': return listTasks();
 
 - **The long-lived server→client SSE push channel is removed** — a server may only send requests to the client *while it is actively processing a client request*. Standing push streams / out-of-band notifications need rework.
 - **Streamable HTTP now requires `Mcp-Method` and `Mcp-Name` headers** that mirror the JSON-RPC body; servers must reject requests where headers and body disagree.
-- **Auth hardening** — validate the RFC 9207 `iss` parameter, declare OIDC `application_type` on Dynamic Client Registration, and bind tokens to the issuing authorization server.
 - **Tool schemas may now be full JSON Schema 2020-12** (`oneOf`/`anyOf`/`$ref`/conditionals); do not auto-dereference external `$ref` URIs. The *dialect* half of this — schemas still declaring or using draft-07 forms — **is** detectable at runtime: [`mcp-vet probe`](#vet-a-running-server-mcp-vet-probe) checks it against your live server.
+
+(Until 0.9.0, *auth hardening* was on this list. It no longer is: the three
+authorization MUSTs are covered by the `AUTH_*` static rules above and the
+`dcr-still-advertised` / `auth-metadata-missing-iss` probe checks. What remains
+uncovered is the helper-indirection recall boundary — see
+[Known limitations](#known-limitations).)
 
 The CLI prints a one-line reminder of these after every scan.
 
@@ -363,7 +382,7 @@ The stateless verdict is **cross-checked** before it becomes a violation: `requi
 
 ### `--spec 2026-07-28` — the extra compliance suite
 
-`--spec` is a shorthand for `--spec-version` that **also** runs ten additional wire-level checks *on top of* the ones above. `--spec 2026-07-28` vets against the new revision **and** adds the suite; plain `--spec-version 2026-07-28` is unchanged and never runs it, so existing CI invocations keep their exact behavior.
+`--spec` is a shorthand for `--spec-version` that **also** runs twelve additional wire-level checks *on top of* the ones above. `--spec 2026-07-28` vets against the new revision **and** adds the suite; plain `--spec-version 2026-07-28` is unchanged and never runs it, so existing CI invocations keep their exact behavior.
 
 ```bash
 # full readiness AND the extra compliance suite
@@ -382,10 +401,15 @@ npx @booyaka/mcp-vet probe --spec 2026-07-28 node ./dist/server.js
 | `missing-cacheable-fields` | 🟡 WARN | the cacheable list results must carry `ttlMs` and a `cacheScope` of `"public"` or `"private"` (SEP-2549) |
 | `legacy-error-code-renumbered` | 🔴 ERROR | sends an unsupported `protocolVersion` and flags a server still answering `-32001` / `-32003` / `-32004` instead of `-32020` / `-32021` / `-32022` |
 | `ping-still-answered` | 🟡 WARN | sends a `ping` and flags a server that returns a **result** instead of `-32601` — the method is removed |
+| `dcr-still-advertised` | 🟡 WARN | fetches the authorization-server metadata (RFC 9728 protected-resource lookup, then RFC 8414, falling back to the MCP origin) and flags one that still advertises `registration_endpoint` with **no** `client_id_metadata_document_supported` alternative — DCR is Deprecated in favour of Client ID Metadata Documents (PR #2858) |
+| `auth-metadata-missing-iss` | 🟡 WARN | flags authorization-server metadata that omits `authorization_response_iss_parameter_supported` — clients cannot rely on the RFC 9207 `iss` mix-up protection SEP-2468 requires them to validate |
 
 Every one of these is cross-checked the same way the rest of the probe is — an
 inconclusive outcome is reported as a note, never as a violation, and a dead or
-non-MCP server is an operational error (exit 2). The two `stateless-*` checks
+non-MCP server is an operational error (exit 2). The two auth-metadata checks
+specifically: stdio targets skip them (well-known metadata is an HTTP concern),
+and a server that advertises no OAuth metadata at all is an inconclusive note —
+many MCP servers use no OAuth, and that is not a violation. The two `stateless-*` checks
 specifically: a server that answers a stateless, session-less, handshake-less `tools/list` passes both; one that rejects it is classified by *why* — a `session` error trips `stateless-no-session`, an `uninitialized` error trips `stateless-no-init` (a session rejection trips both, since a sessionful server is also not answering the first request directly). The two `deprecated-sampling` / `deprecated-logging` checks watch for server→client traffic for a short window (up to the spec's 5 s, bounded by `--timeout`) and report only what the server actually sends — a server that never samples or logs stays clean. The suite runs on its own fresh connection after the standard probe completes, so the ERROR checks above are unaffected.
 
 Probe findings use the same report formats as the scan: `--json` (machine-readable array on stdout) and `--sarif [file]` (SARIF 2.1.0 — `ERROR` maps to `error`, `WARN` to `warning`), plus `--fail-on breaking|any|none` (default `breaking`: exit 1 only on `ERROR`), `--timeout <ms>` (default 8000, also the hang-detection window), `--quiet`, and `--color`/`--no-color`.
@@ -581,7 +605,7 @@ Some linters let you "grandfather" existing findings so CI stays green. `mcp-vet
 
 - **TypeScript / JavaScript** — parsed with [`ts-morph`](https://ts-morph.com); the analyzer walks the AST and emits normalized tokens (string literals, signed numeric literals, identifiers, object keys) annotated with structural capability context and registration context.
 - **Python** — a bundled script (`dist/python/mcp_ast_scan.py`) runs `ast.parse` + a context-tracking walk in a subprocess (chunked for large repos) and emits the same token shape (with character-accurate columns). When no interpreter exists, a regex fallback covers the deterministic rules.
-- A single rule engine applies all 18 rules to those tokens, so TS and Python behave identically. Findings are de-duplicated per (line, column, rule) and can be suppressed inline.
+- A single rule engine applies all 21 rules to those tokens, so TS and Python behave identically. Findings are de-duplicated per (line, column, rule) and can be suppressed inline.
 
 It matches the ways real servers are actually written, not just raw method strings:
 
@@ -592,7 +616,7 @@ It matches the ways real servers are actually written, not just raw method strin
 - **aliased imports** — `import { InitializeRequestSchema as Init }` (TS) and `from mcp.types import RootsCapability as RC` (Python) are resolved back to their canonical names, so both the import line and the aliased usage sites are flagged. Namespace access (`types.InitializeRequestSchema`) is matched too.
 - **client-side session ownership** — a client transport constructed with a real `sessionId`/`session_id`, or a read of `transport.sessionId`; the migrated `sessionId: undefined` / `session_id=None` forms are recognized as benign.
 
-**Measured, not vibes:** scanned against the official MCP reference servers and both SDK example suites at pinned commits — 447 files / ~44k LOC — findings labeled against source: **243 findings, 241 true positives, 2 false positives (0.8%)** with the 18-rule final-changelog engine (the v0.4.0 9-rule run was 105/104/1 on the same corpus; the jump is the final removals firing on the SDKs' own pre-final examples). Corpus, commit SHAs, per-pattern counts, labeled negatives, and the recall discussion are in [BENCHMARK.md](./BENCHMARK.md).
+**Measured, not vibes:** scanned against the official MCP reference servers and both SDK example suites at pinned commits — 447 files / ~44k LOC — findings labeled against source: **247 findings, 244 true positives, 3 false positives (1.2%)** with the 21-rule engine (the v0.4.0 9-rule run was 105/104/1 on the same corpus; the jump is the final removals firing on the SDKs' own pre-final examples). The three new-in-0.10.0 DCR findings are real missing-`application_type` registration bodies in the python-sdk examples; the one new FP — a server-side token cache mistaken for a credential store — is counted in the table, not suppressed. Corpus, commit SHAs, per-pattern counts, labeled negatives, and the recall discussion are in [BENCHMARK.md](./BENCHMARK.md).
 
 ### Known limitations
 
@@ -604,7 +628,9 @@ These are locked into the test suite as `test/fixtures/adversarial/missed/` — 
 - **Framework-adapter indirection** — routes built dynamically (`app.post('/rpc/' + ns + '/' + action, ...)`).
 - **Cross-module renames** — a wrapper module re-exporting an SDK constant under a new name is flagged *in the wrapper file*, but a consumer importing only the new name scans clean on its own. Scan whole projects, not single files.
 - **Python SDK decorator/method registration** — a handler wired purely as `@server.list_roots()` or a bare `session.list_roots()` call (with no capability declaration or method string in the file) is not matched, to avoid false positives on generic method names. The capability declaration in the same server is normally caught.
-- The **regex fallback** (no Python interpreter) covers only the deterministic rules at reduced precision; install Python for full `.py` fidelity.
+- **Auth helper indirection** — when both the code redemption and the iss validation live inside a third-party helper (`oauth.authorizationCodeGrantRequest(...)`), the file contains no `authorization_code`/`grant_type`/`iss` token and `AUTH_ISS_UNVALIDATED` can neither fire nor verify (`missed/auth-helper-indirection.ts`).
+- **Computed credential-store keys** — `store.set(key_for(server_url), creds)` is skipped rather than guessed at, even when the computed key is in fact a server URL (`missed/computed_cred_key.py`).
+- The **regex fallback** (no Python interpreter) covers only the deterministic rules at reduced precision (the auth-hardening rules need the AST analyzers); install Python for full `.py` fidelity.
 
 This is the recall boundary of static analysis: it proves known patterns are *absent*, not that the server *speaks the new wire contract*. Cover the difference with the [runtime conformance fixtures](#runtime-conformance-fixtures).
 
@@ -643,10 +669,10 @@ Also exported: `renderJson` / `renderMarkdown` / `renderSarif`, `RULES`, and the
 ```bash
 npm install      # installs deps and builds (via prepare)
 npm run build    # tsc -> dist/ + copies the Python script
-npm test         # builds, then runs the Node.js built-in test runner (78 tests)
+npm test         # builds, then runs the Node.js built-in test runner (88 tests)
 ```
 
-Test fixtures live in `test/fixtures/` (dirty TS + Python servers including `dirty/` with one instance of every final-changelog pattern, a `clean/` server with zero violations, `negatives/` true-negatives, a `confidence/` gradient, and `suppress/` cases). Runtime-probe fixtures live in `test/probe-fixtures/` — minimal stdio + Streamable-HTTP MCP servers: one returning draft-07 schemas, one requiring the initialize handshake, one fully migrated 2026-07-28-native (stateless + `server/discover` + `-32602`), and a `server-partial.mjs` with one deliberate migration defect per mode (`legacy-error-code` / `no-discover` / `bad-discover`).
+Test fixtures live in `test/fixtures/` (dirty TS + Python servers including `dirty/` with one instance of every final-changelog pattern, a `clean/` server with zero violations, `negatives/` true-negatives incl. the plain-OAuth pair locking the auth-rule context gate, an `auth/` worked example + its migrated twin, a `confidence/` gradient, and `suppress/` cases). Runtime-probe fixtures live in `test/probe-fixtures/` — minimal stdio + Streamable-HTTP MCP servers: one returning draft-07 schemas, one requiring the initialize handshake, one fully migrated 2026-07-28-native (stateless + `server/discover` + `-32602`), a `server-partial.mjs` with one deliberate migration defect per mode (`legacy-error-code` / `no-discover` / `bad-discover`), and the HTTP fixture's `auth-legacy` / `auth-migrated` modes serving RFC 8414 metadata for the two auth checks.
 
 ## License
 

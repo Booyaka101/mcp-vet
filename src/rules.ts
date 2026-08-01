@@ -1,5 +1,13 @@
 import { Token, Finding, PatternId, RuntimeRuleId, Severity, Confidence } from './types';
-import { SPEC_URL, SEP_2106_URL, CHANGELOG_URL, DEPRECATED_REGISTRY_URL } from './constants';
+import {
+  SPEC_URL,
+  SEP_2106_URL,
+  CHANGELOG_URL,
+  DEPRECATED_REGISTRY_URL,
+  SEP_2468_URL,
+  SEP_837_URL,
+  SEP_2352_URL,
+} from './constants';
 
 interface RuleMeta {
   id: PatternId;
@@ -227,6 +235,54 @@ export const RULES: Record<PatternId, RuleMeta> = {
       '// RFC7591 dynamic registration is Deprecated (earliest removal: first revision released\n// on or after 2027-07-28). Prefer Client ID Metadata Documents; keep DCR only as a\n// fallback for authorization servers that do not support them.',
     docUrl: DEPRECATED_REGISTRY_URL,
   },
+  // --- 0.10.0: the three authorization-hardening MUSTs (final changelog Minor
+  // changes 7/8/9). These are correctness requirements, not removals — reported
+  // like the DEPRECATED tier (exit 0) so they warn without failing the build.
+  AUTH_ISS_UNVALIDATED: {
+    id: 'AUTH_ISS_UNVALIDATED',
+    label: 'authorization code redeemed without iss validation',
+    severity: 'DEPRECATED',
+    explanation:
+      'The 2026-07-28 changelog (SEP-2468): "Authorization servers SHOULD include the `iss` parameter in authorization responses per RFC 9207, and MCP clients MUST validate a present `iss` against the recorded issuer before redeeming the authorization code." This file redeems an authorization code (grant_type authorization_code) but never reads or compares an iss/issuer value — a mix-up attack can trick it into sending the code to the wrong server.',
+    after: [
+      '// 2026-07-28 (SEP-2468 / RFC 9207): validate iss BEFORE redeeming the code.',
+      "// RFC 9207: compare the response's iss to the recorded issuer by simple string",
+      '// comparison, and abort on mismatch:',
+      "if (params.iss !== undefined && params.iss !== recordedIssuer) throw new Error('iss mismatch');",
+      '// ...only then POST the token-endpoint request with grant_type authorization_code.',
+    ].join('\n'),
+    docUrl: SEP_2468_URL,
+  },
+  AUTH_DCR_NO_APPLICATION_TYPE: {
+    id: 'AUTH_DCR_NO_APPLICATION_TYPE',
+    label: 'DCR registration without application_type',
+    severity: 'DEPRECATED',
+    explanation:
+      'The 2026-07-28 changelog (SEP-837): "Require MCP clients to specify an appropriate `application_type` during Dynamic Client Registration to avoid OpenID Connect redirect URI conflicts." This registration body has redirect_uris/client_name but no application_type — under OIDC it defaults to "web", which conflicts with native-style (localhost) redirect URIs.',
+    after: [
+      "// 2026-07-28 (SEP-837): set application_type explicitly — 'native' for desktop/CLI/",
+      "// localhost redirect URIs, 'web' for remote browser apps; non-OIDC servers ignore it.",
+      "const body = { redirect_uris, client_name, application_type: 'native' };",
+      '// NOTE: DCR itself is now Deprecated (changelog Deprecated item 4, PR #2858) in favour',
+      '// of Client ID Metadata Documents — prefer a hosted CIMD client_id URL where the',
+      '// authorization server advertises client_id_metadata_document_supported.',
+    ].join('\n'),
+    docUrl: SEP_837_URL,
+  },
+  AUTH_CREDENTIALS_NOT_ISSUER_KEYED: {
+    id: 'AUTH_CREDENTIALS_NOT_ISSUER_KEYED',
+    label: 'client credentials not keyed by issuer',
+    severity: 'DEPRECATED',
+    explanation:
+      'The 2026-07-28 changelog (SEP-2352): "clients MUST key persisted credentials by the issuer identifier, MUST NOT reuse them with a different authorization server, and MUST re-register when the authorization server changes." These credentials are persisted under a key that is not the issuer identifier (a bare constant, or a server/resource URL) — when the resource\'s authorization server changes, they would be replayed against the wrong AS.',
+    after: [
+      '// 2026-07-28 (SEP-2352): key persisted client credentials by the ISSUER identifier.',
+      'store.set(issuer, { client_id, client_secret });',
+      '// When protected-resource metadata names a different AS, do not reuse these',
+      '// credentials — re-register with the new authorization server.',
+    ].join('\n'),
+    docUrl: SEP_2352_URL,
+  },
 };
 
 export interface RuntimeRuleMeta {
@@ -390,6 +446,29 @@ export const RUNTIME_RULES: Record<RuntimeRuleId, RuntimeRuleMeta> = {
       'Remove the ping handler and answer ping with -32601. Liveness is transport-level on 2026-07-28 (the HTTP request/response itself, or process supervision on stdio).',
     docUrl: CHANGELOG_URL,
   },
+
+  // --- added in 0.10.0 — authorization-server metadata (auth hardening) ---
+
+  'dcr-still-advertised': {
+    id: 'dcr-still-advertised',
+    label: 'authorization server still advertises DCR with no CIMD alternative',
+    severity: 'WARN',
+    explanation:
+      'The 2026-07-28 spec deprecates the OAuth 2.0 Dynamic Client Registration Protocol (RFC7591) in favor of Client ID Metadata Documents (changelog Deprecated item 4, PR #2858). This authorization server metadata advertises a registration_endpoint but not client_id_metadata_document_supported, so clients have no CIMD alternative and are forced onto the deprecated path.',
+    after:
+      'Advertise "client_id_metadata_document_supported": true in the OAuth authorization server metadata and accept HTTPS-URL client_ids; keep registration_endpoint only as a backwards-compatibility fallback.',
+    docUrl: CHANGELOG_URL,
+  },
+  'auth-metadata-missing-iss': {
+    id: 'auth-metadata-missing-iss',
+    label: 'authorization server metadata omits RFC 9207 iss support',
+    severity: 'WARN',
+    explanation:
+      'The 2026-07-28 changelog (SEP-2468): "Authorization servers SHOULD include the `iss` parameter in authorization responses per RFC 9207, and MCP clients MUST validate a present `iss` against the recorded issuer before redeeming the authorization code." This authorization server metadata omits authorization_response_iss_parameter_supported, so clients cannot rely on the iss mix-up protection.',
+    after:
+      'Include the iss parameter in authorization responses (RFC 9207) and advertise "authorization_response_iss_parameter_supported": true in the authorization server metadata.',
+    docUrl: SEP_2468_URL,
+  },
 };
 
 const CAP_RE = /capabilities/i;
@@ -459,6 +538,13 @@ const INCLUDE_CONTEXT_RE = /includeContext|include_context/;
 // actually MCP-related — a plain SSE client reading Last-Event-ID, or a /ping
 // health route, must stay clean.
 const MCP_CONTEXT_RE = /\bmcp\b|mcp[-_]|modelcontextprotocol|model context protocol/i;
+
+// Any token that shows the file is iss-aware: the `iss` parameter itself, an
+// `issuer` field, or a variable like recordedIssuer/expectedIssuer. Reading OR
+// comparing any of these counts — the AUTH_ISS_UNVALIDATED rule is deliberately
+// conservative (it flags only files that never touch the concept at all).
+const issAware = (lower: string): boolean =>
+  lower === 'iss' || lower === 'issuer' || lower.includes('issuer');
 
 // SDK request/notification *schema constants* — how real MCP SDK servers register
 // handlers (e.g. `server.setRequestHandler(InitializeRequestSchema, ...)`). Matching
@@ -537,6 +623,16 @@ export function applyRules(
     capLines.some((cl) => Math.abs(cl - line) <= 5);
   const nearIncludeContext = (line: number) =>
     includeContextLines.some((cl) => Math.abs(cl - line) <= 5);
+
+  // File-level signals for the three auth-hardening rules (0.10.0). Like
+  // SSE_RESUMABILITY_REMOVED, they are gated on MCP file context so a plain
+  // OAuth client in an unrelated file stays clean.
+  let authCodeToken: Token | null = null; // grant_type 'authorization_code' redemption
+  let sawGrantType = false;
+  let sawIss = false;
+  let dcrBodyToken: Token | null = null; // redirect_uris in a registration body
+  let sawClientName = false;
+  let sawApplicationType = false;
 
   const push = (id: PatternId, t: Token, confidence: Confidence) => {
     if (!enabled.has(id)) return;
@@ -670,6 +766,28 @@ export function applyRules(
       push('OAUTH_DCR', t, 'medium');
     }
 
+    // Rules 8i-8k — file-level signals for the auth-hardening rules, gathered
+    // here and resolved after the loop (they depend on what the file NEVER
+    // contains, which no single token can decide).
+    {
+      const norm = lower.replace(/[-_]/g, '');
+      if (t.kind === 'string' && v === 'authorization_code' && !authCodeToken) authCodeToken = t;
+      if (norm === 'granttype') sawGrantType = true;
+      if (issAware(lower)) sawIss = true;
+      if (norm === 'redirecturis' && (t.kind === 'key' || t.kind === 'string')) {
+        // prefer a structural key over a bare string mention as the anchor
+        if (!dcrBodyToken || (t.kind === 'key' && dcrBodyToken.kind !== 'key')) dcrBodyToken = t;
+      }
+      if (norm === 'clientname') sawClientName = true;
+      if (norm === 'applicationtype') sawApplicationType = true;
+    }
+
+    // Rule 8k — a credential-store write whose key the analyzer classified as
+    // NOT issuer-derived (bare constant, or a server/resource URL variable).
+    if (t.credKey && mcpContext) {
+      push('AUTH_CREDENTIALS_NOT_ISSUER_KEYED', t, 'medium');
+    }
+
     // Rule 9 — SDK schema-constant identifiers used to register handlers
     if (t.kind === 'name' && SCHEMA_CONSTANTS[v]) {
       push(SCHEMA_CONSTANTS[v], t, 'high');
@@ -712,6 +830,28 @@ export function applyRules(
       if (t.inCapabilities) push(CAP_NAMES[v], t, 'high');
       else if (nearCapabilities(t.line)) push(CAP_NAMES[v], t, 'medium');
     }
+  }
+
+  // Rule 8i — AUTH_ISS_UNVALIDATED (SEP-2468 / RFC 9207). A file that redeems
+  // an authorization code (a token request with grant_type 'authorization_code')
+  // but never reads or compares any iss/issuer value. Anchored at the
+  // 'authorization_code' literal. AST analyzers only — the regex fallback can't
+  // see unquoted `params.iss` reads, so it would over-report.
+  if (
+    mcpContext &&
+    opts.source !== 'regex' &&
+    authCodeToken &&
+    sawGrantType &&
+    !sawIss
+  ) {
+    push('AUTH_ISS_UNVALIDATED', authCodeToken, 'medium');
+  }
+
+  // Rule 8j — AUTH_DCR_NO_APPLICATION_TYPE (SEP-837). A registration body
+  // (redirect_uris + client_name) with no application_type anywhere in the
+  // file. Anchored at the redirect_uris key.
+  if (mcpContext && dcrBodyToken && sawClientName && !sawApplicationType) {
+    push('AUTH_DCR_NO_APPLICATION_TYPE', dcrBodyToken, 'medium');
   }
 
   return findings.sort(

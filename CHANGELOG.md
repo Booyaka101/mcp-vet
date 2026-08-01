@@ -4,6 +4,79 @@ All notable changes to `mcp-vet` are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.0]
+
+The authorization-hardening release. 0.3.0 promised that changes with no
+static signal — "SSE push-channel removal, required Mcp-Method/Mcp-Name
+headers, auth hardening, JSON Schema 2020-12 schemas" — would at least be
+named after every scan. Headers and schemas got probe checks; auth hardening
+never got anything. But the final changelog's three authorization paragraphs
+(Minor changes 7/8/9) ARE statically visible, so this release covers them and
+removes "auth hardening" from the post-scan needs-manual-review notice.
+
+### Added — three auth-hardening static rules (exit-0 warn tier), in BOTH analyzers
+
+These are MUSTs about *correctness*, not removals — they report at the
+DEPRECATED tier (exit 0) and never fail the build. All three are gated on
+file-level MCP context the same way `SSE_RESUMABILITY_REMOVED` is, so a plain
+OAuth client in an unrelated file stays clean (locked by
+`negatives/plain-oauth-client.ts` + `negatives/plain_oauth_client.py`).
+
+- **`AUTH_ISS_UNVALIDATED`** (SEP-2468) — a file that redeems an authorization
+  code (a token request with `grant_type` `'authorization_code'`) but never
+  reads or compares any `iss`/`issuer` value: *"MCP clients MUST validate a
+  present `iss` against the recorded issuer before redeeming the authorization
+  code"* (RFC 9207). Deliberately conservative: any iss/issuer-named token
+  counts as awareness, so only files that never touch the concept are flagged.
+- **`AUTH_DCR_NO_APPLICATION_TYPE`** (SEP-837) — a registration body with
+  `redirect_uris` + `client_name` but no `application_type` anywhere in the
+  file: *"Require MCP clients to specify an appropriate `application_type`
+  during Dynamic Client Registration."* The fix also notes DCR itself is now
+  Deprecated in favour of Client ID Metadata Documents (changelog Deprecated
+  item 4 — PR #2858; there is no SEP number for the deprecation).
+- **`AUTH_CREDENTIALS_NOT_ISSUER_KEYED`** (SEP-2352) — persisted
+  `client_id`/`client_secret` written to a store under a bare constant key or
+  a server/resource-URL variable: *"clients MUST key persisted credentials by
+  the issuer identifier, MUST NOT reuse them with a different authorization
+  server, and MUST re-register when the authorization server changes."* A key
+  mentioning iss/issuer is the migrated form and never flagged.
+
+What deliberately stays clean: computed store keys and helper-indirected
+redemptions (`oauth.authorizationCodeGrantRequest(...)`) are outside the recall
+boundary — two new `adversarial/missed/` fixtures lock that honestly.
+
+### Added — two probe checks (the `--spec 2026-07-28` suite is now twelve)
+
+- **`dcr-still-advertised`** (WARN) — the authorization-server metadata
+  (RFC 9728 protected-resource → RFC 8414 lookup, falling back to the MCP
+  origin) still advertises `registration_endpoint` with no
+  `client_id_metadata_document_supported` alternative.
+- **`auth-metadata-missing-iss`** (WARN) — that metadata omits
+  `authorization_response_iss_parameter_supported` (RFC 9207 / SEP-2468).
+- Suite discipline is unchanged: stdio targets skip both (metadata is an HTTP
+  concern), a server with no OAuth metadata is an inconclusive note, and a
+  dead server is exit 2 — never a false violation. Both are gated behind
+  `--spec`; plain `--spec-version 2026-07-28` behaves exactly as before.
+
+### Changed — every docUrl repointed to the dated permalink
+
+The dated URL `https://modelcontextprotocol.io/specification/2026-07-28/…`
+404'd on release day (0.9.0 recorded that and cited `/specification/draft/`);
+it resolves now (re-verified 2026-08-01, full final Key Changes list including
+the three authorization paragraphs). Every rule docUrl now cites the dated
+permalink — a `/draft/` URL silently drifts at the next revision — and a test
+asserts no rule docUrl contains `/draft/`.
+
+### Benchmark
+
+Re-run on the same pinned corpus with the 21-rule engine: **247 findings,
+244 true positives, 3 false positives (1.2%)**. The three new DCR findings in
+the python-sdk examples are real (`client_name` + `redirect_uris` bodies with
+no `application_type`); the one NEW false positive — a server-side
+access-token cache keyed by `mcp_token`, which the credential-key heuristic
+mistook for a client-credential store — is counted in BENCHMARK.md, not
+suppressed. 88 tests (was 78), none skipped.
+
 ## [0.9.0]
 
 The final-specification release. mcp-vet was built against the 2026-07-28

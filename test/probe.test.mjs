@@ -367,7 +367,7 @@ test('--spec runs the compliance suite IN ADDITION to the existing checks (migra
   assert.equal(res.findings.length, 0, JSON.stringify(res.findings, null, 2));
 });
 
-test('--spec: the passing/skip notes for all ten checks are surfaced on a clean stateless server', async () => {
+test('--spec: the passing/skip notes for all twelve checks are surfaced on a clean stateless server', async () => {
   const res = await runProbe([...SPEC, stateless]);
   assert.equal(res.status, 0, res.stderr);
   for (const note of [
@@ -382,8 +382,78 @@ test('--spec: the passing/skip notes for all ten checks are surfaced on a clean 
     'missing-cacheable-fields: passed',
     'legacy-error-code-renumbered: passed',
     'ping-still-answered: passed',
+    // v0.10.0 — the auth-metadata checks are an HTTP concern, skipped on stdio
+    'dcr-still-advertised / auth-metadata-missing-iss: skipped',
   ]) {
     assert.ok(res.stdout.includes(note), `missing note "${note}":\n${res.stdout}`);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// v0.10.0 — the two authorization-server metadata checks (auth hardening):
+// dcr-still-advertised (PR #2858) and auth-metadata-missing-iss (SEP-2468).
+// ---------------------------------------------------------------------------
+
+test('--spec: legacy auth metadata trips dcr-still-advertised AND auth-metadata-missing-iss (WARN, exit 0)', async () => {
+  const srv = await startHttpFixture('auth-legacy');
+  try {
+    const res = await runProbeJson([...SPEC, srv.url]);
+    assert.equal(res.status, 0, `WARN-only must not fail the default gate\n${res.stderr}`);
+    const ids = res.findings.map((f) => f.patternId).sort();
+    assert.deepEqual(ids, ['auth-metadata-missing-iss', 'dcr-still-advertised'],
+      JSON.stringify(res.findings, null, 2));
+    for (const f of res.findings) assert.equal(f.severity, 'WARN');
+    const dcr = res.findings.find((f) => f.patternId === 'dcr-still-advertised');
+    assert.match(dcr.before, /registration_endpoint/, 'evidence names the advertised endpoint');
+    assert.match(dcr.after, /client_id_metadata_document_supported/, 'fix points at CIMD');
+    const iss = res.findings.find((f) => f.patternId === 'auth-metadata-missing-iss');
+    assert.match(iss.before, /authorization_response_iss_parameter_supported/, 'evidence names the missing field');
+    assert.match(iss.explanation, /RFC 9207/, 'explanation cites RFC 9207');
+  } finally {
+    srv.kill();
+  }
+});
+
+test('--spec: migrated auth metadata (CIMD + iss advertised) passes both checks with notes', async () => {
+  const srv = await startHttpFixture('auth-migrated');
+  try {
+    const res = await runProbe([...SPEC, srv.url]);
+    assert.equal(res.status, 0, res.stderr);
+    assert.ok(
+      res.stdout.includes('dcr-still-advertised: passed'),
+      `CIMD-advertising metadata passes:\n${res.stdout}`,
+    );
+    assert.ok(
+      res.stdout.includes('auth-metadata-missing-iss: passed'),
+      `iss-advertising metadata passes:\n${res.stdout}`,
+    );
+    assert.ok(/no runtime violations/.test(res.stdout), res.stdout);
+  } finally {
+    srv.kill();
+  }
+});
+
+test('the auth-metadata checks are GATED behind --spec; a server with NO metadata is inconclusive, never a violation', async () => {
+  // Gating: the same legacy-metadata server under plain --spec-version is clean.
+  const legacy = await startHttpFixture('auth-legacy');
+  try {
+    const res = await runProbeJson(['--spec-version', '2026-07-28', '--timeout', '1200', legacy.url]);
+    assert.equal(res.status, 0, res.stderr);
+    assert.equal(res.findings.length, 0, JSON.stringify(res.findings, null, 2));
+  } finally {
+    legacy.kill();
+  }
+  // Inconclusive: a stateless server that serves no /.well-known/ tree at all.
+  const bare = await startHttpFixture('stateless');
+  try {
+    const res = await runProbe([...SPEC, bare.url]);
+    assert.equal(res.status, 0, res.stderr);
+    assert.ok(
+      res.stdout.includes('dcr-still-advertised / auth-metadata-missing-iss: inconclusive'),
+      `no-metadata outcome is an inconclusive note:\n${res.stdout}`,
+    );
+  } finally {
+    bare.kill();
   }
 });
 

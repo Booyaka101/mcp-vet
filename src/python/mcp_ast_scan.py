@@ -33,6 +33,15 @@ SSE_KWARGS = (
     "resumption_token", "resumptionToken",
     "on_resumption_token", "onresumptiontoken",
 )
+# Credential-store shapes (SEP-2352): a persist-ish call/subscript-assign whose
+# value side carries client_id/client_secret. The KEY is classified — an
+# issuer-derived key is the migrated form; a bare string constant or a
+# server/resource-URL variable violates the issuer-keying MUST.
+STORE_VERBS = re.compile(r"^(set|setitem|put|add|write|__setitem__)$", re.I)
+STOREISH = re.compile(r"save|store|persist|upsert|cache|credential", re.I)
+CREDENTIALISH = re.compile(r"client_secret|client_id|credential", re.I)
+SERVERISH_KEY = re.compile(r"server|url|uri|resource|endpoint|host|base|target|mcp", re.I)
+ISSUERISH = re.compile(r"\biss\b|issuer", re.I)
 
 
 def _func_mentions_caps(func):
@@ -180,6 +189,32 @@ def _base_name(node):
     return ""
 
 
+def _subtree_mentions_credentials(node):
+    """True when a value expression carries client_id/client_secret/credential
+    in any name, attribute, kwarg, or string (incl. dict keys)."""
+    for n in ast.walk(node):
+        if isinstance(n, ast.Name) and CREDENTIALISH.search(n.id):
+            return True
+        if isinstance(n, ast.Attribute) and CREDENTIALISH.search(n.attr):
+            return True
+        if isinstance(n, ast.Constant) and isinstance(n.value, str) and CREDENTIALISH.search(n.value):
+            return True
+        if isinstance(n, ast.keyword) and n.arg and CREDENTIALISH.search(n.arg):
+            return True
+    return False
+
+
+def _expr_text(node):
+    """Rough textual name of a key expression, for issuer/server classification."""
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return _expr_text(node.value) + "." + node.attr
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    return ""
+
+
 def _collect_aliases(tree):
     """Map local alias -> canonical imported name, so `from mcp.types import
     RootsCapability as RC` still flags `RC()` usage sites (and the import line)."""
@@ -251,8 +286,34 @@ class Scanner:
                     {"kind": "name", "value": a.name.rsplit(".", 1)[-1], "line": line, "col": self._col(a) or self._col(node)}
                 )
 
+    def _maybe_cred_key(self, key_node):
+        """Emit a credKey token when `key_node` is clearly NOT issuer-derived.
+        Computed keys (calls, f-strings) are skipped — a documented miss."""
+        s = key_node
+        if isinstance(s, ast.Index):  # py<3.9 compatibility
+            s = s.value
+        text = _expr_text(s)
+        if not text or ISSUERISH.search(text):
+            return
+        if isinstance(s, ast.Constant) and isinstance(s.value, str):
+            self.tokens.append(
+                {"kind": "string", "value": s.value, "line": s.lineno, "col": self._col(s), "credKey": True}
+            )
+        elif isinstance(s, (ast.Name, ast.Attribute)) and SERVERISH_KEY.search(text):
+            self.tokens.append(
+                {"kind": "name", "value": text, "line": s.lineno, "col": self._col(s), "credKey": True}
+            )
+
     def visit(self, node, in_caps):
         self.emit_for(node, in_caps)
+
+        # Credential-store subscript assignment: store[server_url] = {...client_secret...}
+        if isinstance(node, ast.Assign):
+            for tgt in node.targets:
+                if isinstance(tgt, ast.Subscript):
+                    base = _expr_text(tgt.value)
+                    if _subtree_mentions_credentials(node.value) or CREDENTIALISH.search(base):
+                        self._maybe_cred_key(tgt.slice)
 
         if isinstance(node, ast.Dict):
             for k, v in zip(node.keys, node.values):
@@ -268,6 +329,16 @@ class Scanner:
             return
 
         if isinstance(node, ast.Call):
+            # Credential-store call: store.set(key, creds) / save_credentials(key, ...)
+            fname = _func_name(node.func)
+            if (STORE_VERBS.match(fname) or STOREISH.search(fname)) and len(node.args) >= 2:
+                value_side = node.args[1:] + [kw.value for kw in node.keywords]
+                if STOREISH.search(fname) and "credential" in fname.lower():
+                    creds = True
+                else:
+                    creds = any(_subtree_mentions_credentials(a) for a in value_side)
+                if creds:
+                    self._maybe_cred_key(node.args[0])
             # A call to ClientCapabilities(...) / ServerCapabilities(...) is itself
             # a capabilities container — its args/kwargs are structurally in-caps.
             caps_ctx = in_caps or _func_mentions_caps(node.func)

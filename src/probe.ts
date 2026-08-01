@@ -643,8 +643,86 @@ async function waitUntil(pred: () => boolean, windowMs: number): Promise<void> {
 }
 
 /**
- * Runs the ten `--spec 2026-07-28` compliance checks and returns the findings
- * plus human-readable notes to fold into the ProbeResult:
+ * Fetch a JSON document with a bounded timeout; null on any failure. Used for
+ * the OAuth well-known metadata lookups — a missing document is an expected,
+ * inconclusive outcome (many MCP servers use no OAuth at all), never an error.
+ */
+async function fetchJson(url: string, timeoutMs: number): Promise<any | null> {
+  try {
+    const res = await fetch(url, {
+      headers: { accept: 'application/json' },
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Locate the authorization server metadata for an HTTP MCP endpoint:
+ * RFC 9728 protected-resource metadata names the authorization server(s), whose
+ * RFC 8414 metadata lives under /.well-known/oauth-authorization-server (with
+ * and without the issuer's path component). Falls back to the MCP origin as
+ * the issuer. Returns null when nothing resolves — an inconclusive outcome.
+ */
+async function discoverAuthServerMetadata(
+  mcpUrl: string,
+  timeoutMs: number,
+): Promise<{ metadata: any; url: string } | null> {
+  let u: URL;
+  try {
+    u = new URL(mcpUrl);
+  } catch {
+    return null;
+  }
+  const mcpPath = u.pathname.replace(/\/$/, '');
+  const issuers: string[] = [];
+  for (const c of [
+    `${u.origin}/.well-known/oauth-protected-resource${mcpPath}`,
+    `${u.origin}/.well-known/oauth-protected-resource`,
+  ]) {
+    const pr = await fetchJson(c, timeoutMs);
+    const as = pr && Array.isArray(pr.authorization_servers) ? pr.authorization_servers : [];
+    for (const a of as) if (typeof a === 'string') issuers.push(a);
+    if (issuers.length) break;
+  }
+  if (!issuers.length) issuers.push(u.origin);
+
+  const tried = new Set<string>();
+  for (const issuer of issuers) {
+    let iu: URL;
+    try {
+      iu = new URL(issuer);
+    } catch {
+      continue;
+    }
+    const ipath = iu.pathname.replace(/\/$/, '');
+    for (const mc of [
+      `${iu.origin}/.well-known/oauth-authorization-server${ipath}`,
+      `${iu.origin}/.well-known/oauth-authorization-server`,
+    ]) {
+      if (tried.has(mc)) continue;
+      tried.add(mc);
+      const m = await fetchJson(mc, timeoutMs);
+      if (
+        m &&
+        typeof m === 'object' &&
+        (typeof m.issuer === 'string' ||
+          typeof m.authorization_endpoint === 'string' ||
+          typeof m.registration_endpoint === 'string')
+      ) {
+        return { metadata: m, url: mc };
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Runs the twelve `--spec 2026-07-28` compliance checks and returns the
+ * findings plus human-readable notes to fold into the ProbeResult:
  *   1. stateless-no-session          ERROR — a no-session request must not be refused
  *   2. stateless-no-init             ERROR — a no-handshake request must be answered
  *   3. required-headers              ERROR — Mcp-Method/Mcp-Name must be accepted (HTTP)
@@ -655,6 +733,10 @@ async function waitUntil(pred: () => boolean, windowMs: number): Promise<void> {
  *   8. missing-cacheable-fields      WARN  — list results must carry ttlMs/cacheScope (SEP-2549)
  *   9. legacy-error-code-renumbered  ERROR — -32001/-32003/-32004 → -32020/-32021/-32022
  *  10. ping-still-answered           WARN  — the removed ping must be -32601
+ *  11. dcr-still-advertised          WARN  — AS metadata advertises registration_endpoint
+ *                                            with no CIMD alternative (PR #2858)
+ *  12. auth-metadata-missing-iss     WARN  — AS metadata omits
+ *                                            authorization_response_iss_parameter_supported (SEP-2468)
  */
 async function runSpecChecks(
   target: ProbeTarget,
@@ -918,6 +1000,53 @@ async function runSpecChecks(
       }
     } catch (err) {
       notes.push(`ping-still-answered: inconclusive — ${(err as Error).message}`);
+    }
+
+    // Checks 11 & 12 — authorization-server metadata (auth hardening, 0.10.0).
+    // Pure well-known HTTP lookups, independent of the MCP connection. An
+    // unauthenticated server, a server with no OAuth, or unreachable metadata
+    // is inconclusive — never a violation.
+    if (!isHttp) {
+      notes.push(
+        'dcr-still-advertised / auth-metadata-missing-iss: skipped — authorization-server metadata is an HTTP concern; target is stdio',
+      );
+    } else {
+      const found = await discoverAuthServerMetadata((target as { url: string }).url, opts.timeoutMs);
+      if (!found) {
+        notes.push(
+          'dcr-still-advertised / auth-metadata-missing-iss: inconclusive — no authorization-server metadata advertised (the server may not use OAuth)',
+        );
+      } else {
+        const m = found.metadata;
+        if (typeof m.registration_endpoint === 'string' && m.client_id_metadata_document_supported !== true) {
+          findings.push(
+            runtimeFinding(
+              'dcr-still-advertised',
+              label,
+              `authorization-server metadata at ${found.url} advertises registration_endpoint (${m.registration_endpoint}) with no client_id_metadata_document_supported alternative`,
+            ),
+          );
+          notes.push('dcr-still-advertised: WARN — registration_endpoint advertised with no CIMD alternative');
+        } else if (typeof m.registration_endpoint === 'string') {
+          notes.push(
+            'dcr-still-advertised: passed — client_id_metadata_document_supported: true (registration_endpoint remains as a backwards-compatibility fallback)',
+          );
+        } else {
+          notes.push('dcr-still-advertised: clean — no registration_endpoint advertised');
+        }
+        if (m.authorization_response_iss_parameter_supported === true) {
+          notes.push('auth-metadata-missing-iss: passed — authorization_response_iss_parameter_supported: true');
+        } else {
+          findings.push(
+            runtimeFinding(
+              'auth-metadata-missing-iss',
+              label,
+              `authorization-server metadata at ${found.url} omits authorization_response_iss_parameter_supported (RFC 9207)`,
+            ),
+          );
+          notes.push('auth-metadata-missing-iss: WARN — metadata omits authorization_response_iss_parameter_supported');
+        }
+      }
     }
   } finally {
     unsub?.();

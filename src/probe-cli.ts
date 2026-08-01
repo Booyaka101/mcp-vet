@@ -27,7 +27,7 @@ export async function runProbeCli(argv: string[]): Promise<number> {
   program
     .name('mcp-vet probe')
     .description(
-      'Connect to a RUNNING MCP server (stdio command or Streamable HTTP URL) and vet its wire behavior: JSON Schema dialect of tool schemas (SEP-2106) and, with --spec-version 2026-07-28, stateless-protocol readiness, the required server/discover RPC (SEP-2575), and the -32002 → -32602 resource error-code change. Add --spec 2026-07-28 to ALSO run the compliance suite: stateless-no-session, stateless-no-init, required-headers, and the deprecated-sampling/roots/logging warnings.',
+      'Connect to a RUNNING MCP server (stdio command or Streamable HTTP URL) and vet its wire behavior: JSON Schema dialect of tool schemas (SEP-2106) and, with --spec-version 2026-07-28, stateless-protocol readiness, the required server/discover RPC (SEP-2575), and the -32002 → -32602 resource error-code change. Add --spec 2026-07-28 to ALSO run the twelve-check compliance suite: stateless-no-session, stateless-no-init, required-headers, the deprecated-sampling/roots/logging warnings, resultType/cacheable-field checks, renumbered error codes, the ping removal, and the authorization-server metadata checks (dcr-still-advertised, auth-metadata-missing-iss).',
     )
     .argument('<target...>', 'server URL (http/https) or a command + args to spawn (stdio)')
     .option(

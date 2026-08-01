@@ -36,6 +36,17 @@ const ALL = [
   'LOGGING_CAP',
   'INCLUDE_CONTEXT_VALUES',
   'OAUTH_DCR',
+  'AUTH_ISS_UNVALIDATED',
+  'AUTH_DCR_NO_APPLICATION_TYPE',
+  'AUTH_CREDENTIALS_NOT_ISSUER_KEYED',
+];
+
+// The three authorization-hardening rules added in 0.10.0 (final changelog
+// Minor changes 7/8/9 — SEP-2468 / SEP-837 / SEP-2352).
+const AUTH_IDS = [
+  'AUTH_ISS_UNVALIDATED',
+  'AUTH_DCR_NO_APPLICATION_TYPE',
+  'AUTH_CREDENTIALS_NOT_ISSUER_KEYED',
 ];
 
 // The nine rule ids added or reclassified for the FINAL 2026-07-28 changelog.
@@ -81,7 +92,7 @@ function runCli(args, env = {}) {
 // Core detection
 // ---------------------------------------------------------------------------
 
-test('detects all 18 pattern types across the fixtures (exit 1)', () => {
+test('detects all 21 pattern types across the fixtures (exit 1)', () => {
   const res = runCli([fixtures]);
   const detected = new Set(res.findings.map((f) => f.patternId));
   for (const pid of ALL) {
@@ -122,6 +133,9 @@ test('severity classification is correct', () => {
     'LOGGING_CAP',
     'INCLUDE_CONTEXT_VALUES',
     'OAUTH_DCR',
+    'AUTH_ISS_UNVALIDATED',
+    'AUTH_DCR_NO_APPLICATION_TYPE',
+    'AUTH_CREDENTIALS_NOT_ISSUER_KEYED',
   ]) {
     assert.deepEqual([...sev(pid)], ['DEPRECATED'], `${pid} is DEPRECATED`);
   }
@@ -251,6 +265,124 @@ test('SEVERITY SPLIT LOCK: removed METHODS are BREAKING (exit 1) while the capab
   const ids2 = new Set(r2.findings.map((f) => f.patternId));
   assert.ok(ids2.has('LOGGING_CAP') && ids2.has('ROOTS_CAP'), 'still reported as DEPRECATED');
   assert.ok(r2.findings.every((f) => f.severity === 'DEPRECATED'), 'DEPRECATED only');
+});
+
+// ---------------------------------------------------------------------------
+// v0.10.0: the three auth-hardening rules (SEP-2468 / SEP-837 / SEP-2352)
+// ---------------------------------------------------------------------------
+
+test('auth-hardening rules fire in BOTH analyzers at the DEPRECATED tier', () => {
+  const res = runCli([join(fixtures, 'dirty')]);
+  const tsIds = new Set(res.findings.filter((f) => f.file.endsWith('.ts')).map((f) => f.patternId));
+  const pyIds = new Set(res.findings.filter((f) => f.file.endsWith('.py')).map((f) => f.patternId));
+  for (const pid of AUTH_IDS) {
+    assert.ok(tsIds.has(pid), `TS analyzer detects ${pid} (got: ${[...tsIds].join(', ')})`);
+    assert.ok(pyIds.has(pid), `Python analyzer detects ${pid} (got: ${[...pyIds].join(', ')})`);
+  }
+  // MUSTs about correctness, not removals — they warn (exit 0 tier), never exit 1.
+  for (const f of res.findings.filter((x) => AUTH_IDS.includes(x.patternId))) {
+    assert.equal(f.severity, 'DEPRECATED', `${f.patternId} stays at the exit-0 tier`);
+    assert.equal(f.confidence, 'medium');
+  }
+});
+
+test('WORKED EXAMPLE: DCR body without application_type + redemption without iss = exactly two findings, exit 0', () => {
+  const res = runCli([join(fixtures, 'auth', 'worked-example.ts')]);
+  assert.equal(res.status, 0, `no BREAKING rule fired — exit 0\n${res.stderr}`);
+  const ids = res.findings.map((f) => f.patternId).sort();
+  assert.deepEqual(ids, ['AUTH_DCR_NO_APPLICATION_TYPE', 'AUTH_ISS_UNVALIDATED'],
+    JSON.stringify(res.findings.map((f) => `${f.file}:${f.line}:${f.patternId}`)));
+  for (const f of res.findings) {
+    assert.equal(f.severity, 'DEPRECATED');
+    assert.equal(f.confidence, 'medium');
+    assert.ok(f.line > 0 && f.column > 0, 'line and column are present');
+  }
+  const dcr = res.findings.find((f) => f.patternId === 'AUTH_DCR_NO_APPLICATION_TYPE');
+  assert.ok(dcr.docUrl.endsWith('/pull/837'), `SEP-837 docUrl (got ${dcr.docUrl})`);
+  assert.match(dcr.after, /application_type/, 'fix sets application_type explicitly');
+  assert.match(dcr.after, /2858/, 'fix notes the DCR deprecation via PR #2858');
+  assert.match(dcr.before, /redirect_uris/, 'anchored at the registration body');
+  const iss = res.findings.find((f) => f.patternId === 'AUTH_ISS_UNVALIDATED');
+  assert.ok(iss.docUrl.endsWith('/pull/2468'), `SEP-2468 docUrl (got ${iss.docUrl})`);
+  assert.match(iss.explanation, /RFC 9207/, 'explanation cites RFC 9207');
+  assert.match(iss.before, /authorization_code/, 'anchored at the code redemption');
+});
+
+test('WORKED EXAMPLE migrated (application_type + iss guard) produces zero findings', () => {
+  const res = runCli([join(fixtures, 'auth', 'worked-example-migrated.ts')]);
+  assert.equal(res.status, 0);
+  assert.equal(
+    res.findings.length,
+    0,
+    `expected 0, got ${JSON.stringify(res.findings.map((f) => `${f.file}:${f.line}:${f.patternId}`))}`,
+  );
+});
+
+test('a plain OAuth client (no MCP context) stays clean — TS', () => {
+  const { findings } = scanTarget('negatives/plain-oauth-client.ts');
+  assert.equal(findings.length, 0, JSON.stringify(findings.map((f) => `${f.line}:${f.patternId}`)));
+});
+
+test('a plain OAuth client (no MCP context) stays clean — Python', () => {
+  const { findings } = scanTarget('negatives/plain_oauth_client.py');
+  assert.equal(findings.length, 0, JSON.stringify(findings.map((f) => `${f.line}:${f.patternId}`)));
+});
+
+test('credentials keyed by the ISSUER stay clean; a bare-constant key fires (TS + Python)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'mcp-vet-auth-'));
+  const bad = join(dir, 'bad.ts');
+  writeFileSync(
+    bad,
+    [
+      '// persists credentials for an MCP server connection',
+      "store.set('mcp-connector', { client_id, client_secret });",
+    ].join('\n'),
+    'utf8',
+  );
+  const good = join(dir, 'good.ts');
+  writeFileSync(
+    good,
+    [
+      '// persists credentials for an MCP server connection, keyed by issuer',
+      'store.set(issuer, { client_id, client_secret });',
+    ].join('\n'),
+    'utf8',
+  );
+  const goodPy = join(dir, 'good.py');
+  writeFileSync(
+    goodPy,
+    [
+      '# persists credentials for an MCP server connection, keyed by issuer',
+      'store.set(issuer, {"client_id": cid, "client_secret": secret})',
+    ].join('\n'),
+    'utf8',
+  );
+  const r1 = runCli([bad]);
+  const r2 = runCli([good]);
+  const r3 = runCli([goodPy]);
+  rmSync(dir, { recursive: true, force: true });
+  assert.deepEqual(
+    r1.findings.map((f) => f.patternId),
+    ['AUTH_CREDENTIALS_NOT_ISSUER_KEYED'],
+    JSON.stringify(r1.findings),
+  );
+  assert.equal(r1.status, 0, 'warns without failing the build');
+  assert.equal(r2.findings.length, 0, 'issuer-keyed TS store is the migrated form');
+  assert.equal(r3.findings.length, 0, 'issuer-keyed Python store is the migrated form');
+});
+
+test('no rule docUrl points at the /draft/ specification tree (dated permalinks only)', () => {
+  const { RULES, RUNTIME_RULES } = require('../dist/rules.js');
+  const { SPEC_URL, CHANGELOG_URL, DEPRECATED_REGISTRY_URL } = require('../dist/constants.js');
+  for (const [id, r] of Object.entries(RULES)) {
+    const url = r.docUrl ?? SPEC_URL;
+    assert.ok(!url.includes('/draft/'), `${id} cites a /draft/ URL: ${url}`);
+  }
+  for (const [id, r] of Object.entries(RUNTIME_RULES)) {
+    assert.ok(!r.docUrl.includes('/draft/'), `${id} cites a /draft/ URL: ${r.docUrl}`);
+  }
+  assert.match(CHANGELOG_URL, /\/2026-07-28\/changelog$/, 'changelog pinned to the dated permalink');
+  assert.match(DEPRECATED_REGISTRY_URL, /\/2026-07-28\/deprecated$/, 'registry pinned to the dated permalink');
 });
 
 test('deprecated findings cite the registry removal window, not a hardcoded 12 months', () => {
@@ -479,7 +611,7 @@ test('SARIF output is valid 2.1.0 with rules and results', () => {
   rmSync(out, { recursive: true, force: true });
   assert.equal(s.version, '2.1.0');
   assert.equal(s.runs[0].tool.driver.name, 'mcp-vet');
-  assert.equal(s.runs[0].tool.driver.rules.length, 18);
+  assert.equal(s.runs[0].tool.driver.rules.length, 21);
   assert.ok(s.runs[0].results.length > 0);
   for (const r of s.runs[0].results) {
     assert.ok(['error', 'warning'].includes(r.level));

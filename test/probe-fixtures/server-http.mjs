@@ -6,11 +6,18 @@
 //   node server-http.mjs stateless       — 2026-07-28 style: no initialize,
 //     namespaced _meta required, server/discover implemented, -32602 for
 //     unknown resources, clean 2020-12 tool.
+//   node server-http.mjs auth-legacy     — stateless MCP + RFC 8414 metadata at
+//     /.well-known/oauth-authorization-server that still advertises
+//     registration_endpoint with NO client_id_metadata_document_supported and
+//     omits authorization_response_iss_parameter_supported (both auth WARNs).
+//   node server-http.mjs auth-migrated   — stateless MCP + metadata advertising
+//     CIMD support and RFC 9207 iss support (both auth checks pass).
 // Prints "PORT=<n>" on stdout once listening.
 import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
 
-const mode = process.argv[2] === 'stateless' ? 'stateless' : 'requires-init';
+const MODES = ['stateless', 'auth-legacy', 'auth-migrated'];
+const mode = MODES.includes(process.argv[2]) ? process.argv[2] : 'requires-init';
 
 const DRAFT07_TOOL = {
   name: 'lookup_order',
@@ -39,6 +46,31 @@ const MODERN_TOOL = {
 const sessions = new Set();
 
 const server = createServer((req, res) => {
+  // OAuth well-known metadata (GET) for the auth-* modes. Other modes 404 the
+  // whole /.well-known/ tree — the probe reports that as inconclusive.
+  if (req.method === 'GET') {
+    if (
+      (mode === 'auth-legacy' || mode === 'auth-migrated') &&
+      req.url.startsWith('/.well-known/oauth-authorization-server')
+    ) {
+      const origin = `http://127.0.0.1:${server.address().port}`;
+      const metadata = {
+        issuer: origin,
+        authorization_endpoint: `${origin}/authorize`,
+        token_endpoint: `${origin}/token`,
+        registration_endpoint: `${origin}/register`,
+        response_types_supported: ['code'],
+      };
+      if (mode === 'auth-migrated') {
+        metadata.client_id_metadata_document_supported = true;
+        metadata.authorization_response_iss_parameter_supported = true;
+      }
+      res.writeHead(200, { 'content-type': 'application/json' });
+      return res.end(JSON.stringify(metadata));
+    }
+    res.writeHead(404, { 'content-type': 'text/plain' });
+    return res.end('not found');
+  }
   let body = '';
   req.on('data', (d) => (body += d));
   req.on('end', () => {
@@ -85,8 +117,8 @@ const server = createServer((req, res) => {
       return rpcError(-32601, 'Method not found');
     }
 
-    // stateless mode — fully migrated: namespaced _meta required, server/discover
-    // implemented, nonexistent resources answered with the new -32602 code.
+    // stateless / auth-* modes — fully migrated MCP: namespaced _meta required,
+    // server/discover implemented, nonexistent resources answered with -32602.
     if (msg.method === 'initialize')
       return rpcError(-32601, 'Method not found: initialize was removed in 2026-07-28');
     const meta = msg.params && msg.params._meta;

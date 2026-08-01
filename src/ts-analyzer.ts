@@ -46,6 +46,16 @@ function safePropName(node: Node): string | undefined {
 
 const TRANSPORTISH = /transport|client/i;
 
+// Credential-store shapes (SEP-2352): a persist-ish call whose value side
+// carries client_id/client_secret. The KEY argument is classified — an
+// issuer-derived key is the migrated form; a bare string constant or a
+// server/resource-URL variable violates the issuer-keying MUST.
+const STORE_VERBS = /^(set|setItem|put|add|write)$/i;
+const STOREISH_SUBSTR = /save|store|persist|upsert|cache|credential/i;
+const CREDENTIALISH = /client_secret|clientSecret|client_id|clientId|credential/i;
+const SERVERISH_KEY = /server|url|uri|resource|endpoint|host|base|target|mcp/i;
+const ISSUERISH = /\biss\b|issuer/i;
+
 /**
  * Is `node` inside a call/constructor argument of something transport/client
  * shaped (e.g. `new StreamableHTTPClientTransport(url, { sessionId })`)?
@@ -298,6 +308,65 @@ export function analyzeTs(absPath: string, text: string): Token[] {
         if (!TRANSPORTISH.test(pae.getExpression().getText())) continue;
         const { line, col } = posOf(pae.getNameNode());
         tokens.push({ kind: 'name', value: 'sessionId', line, col, clientSession: true });
+      } catch {
+        /* ignore */
+      }
+    }
+
+    // Credential-store writes (SEP-2352). Two shapes: a persist-ish call
+    // (`store.set(key, creds)`, `saveCredentials(key, ...)`) and an
+    // element-access assignment (`creds[serverUrl] = {...}`). The key is only
+    // marked when it is clearly NOT issuer-derived; computed keys (template
+    // expressions, function calls) are skipped — a documented miss.
+    const emitCredKey = (keyNode: Node) => {
+      const keyText = keyNode.getText();
+      if (ISSUERISH.test(keyText)) return; // issuer-keyed — the migrated form
+      const k = keyNode.getKind();
+      const { line, col } = posOf(keyNode);
+      if (k === SyntaxKind.StringLiteral || k === SyntaxKind.NoSubstitutionTemplateLiteral) {
+        let value: string;
+        try {
+          value = (keyNode as any).getLiteralValue();
+        } catch {
+          value = keyText;
+        }
+        tokens.push({ kind: 'string', value, line, col, credKey: true });
+      } else if (
+        (k === SyntaxKind.Identifier || k === SyntaxKind.PropertyAccessExpression) &&
+        SERVERISH_KEY.test(keyText)
+      ) {
+        tokens.push({ kind: 'name', value: keyText, line, col, credKey: true });
+      }
+      // anything else is computed/indirect — unknown, deliberately not flagged
+    };
+    for (const call of sf.getDescendantsOfKind(SyntaxKind.CallExpression)) {
+      try {
+        const expr = call.getExpression();
+        const calleeName =
+          expr.getKind() === SyntaxKind.PropertyAccessExpression
+            ? expr.asKind(SyntaxKind.PropertyAccessExpression)!.getName()
+            : expr.getText();
+        if (!STORE_VERBS.test(calleeName) && !STOREISH_SUBSTR.test(calleeName)) continue;
+        const args = call.getArguments();
+        if (args.length < 2) continue;
+        const valueText = args.slice(1).map((a) => a.getText()).join(' ');
+        if (!CREDENTIALISH.test(valueText) && !/credential/i.test(calleeName)) continue;
+        emitCredKey(args[0]);
+      } catch {
+        /* ignore */
+      }
+    }
+    for (const bin of sf.getDescendantsOfKind(SyntaxKind.BinaryExpression)) {
+      try {
+        if (bin.getOperatorToken().getKind() !== SyntaxKind.EqualsToken) continue;
+        const left = bin.getLeft();
+        if (left.getKind() !== SyntaxKind.ElementAccessExpression) continue;
+        const ea = left.asKind(SyntaxKind.ElementAccessExpression)!;
+        const baseText = ea.getExpression().getText();
+        const rhsText = bin.getRight().getText();
+        if (!CREDENTIALISH.test(rhsText) && !/credential/i.test(baseText)) continue;
+        const arg = ea.getArgumentExpression();
+        if (arg) emitCredKey(arg);
       } catch {
         /* ignore */
       }

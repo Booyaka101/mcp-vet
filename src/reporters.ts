@@ -96,7 +96,7 @@ export function reportTerminal(result: ScanResult, opts: TerminalOptions = {}): 
 function printManualReview(c: any): void {
   console.error(
     c.gray(
-      `note: ${MANUAL_REVIEW.length} more 2026-07-28 changes need manual review (SSE push, required headers, auth, JSON Schema 2020-12) — see the README "Needs manual review" section.`,
+      `note: ${MANUAL_REVIEW.length} more 2026-07-28 changes need manual review (SSE push, required headers, JSON Schema 2020-12) — see the README "Needs manual review" section.`,
     ),
   );
   console.error(

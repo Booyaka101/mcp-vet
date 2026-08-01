@@ -146,8 +146,10 @@ function scanMain(): void {
         '  probe [options] <url|command>  connect to a RUNNING server and vet its wire behavior (alias: run)',
         '                                 (JSON Schema 2020-12 dialect; with --spec-version 2026-07-28, also stateless',
         '                                 readiness, the required server/discover RPC, and the -32602 resource error code;',
-        '                                 with --spec 2026-07-28, ALSO the compliance suite: stateless-no-session,',
-        '                                 stateless-no-init, required-headers, deprecated-sampling/roots/logging)',
+        '                                 with --spec 2026-07-28, ALSO the twelve-check compliance suite: stateless-*,',
+        '                                 required-headers, deprecated-sampling/roots/logging, resultType/cacheable',
+        '                                 fields, renumbered error codes, ping removal, and the authorization-server',
+        '                                 metadata checks dcr-still-advertised / auth-metadata-missing-iss)',
       ].join('\n'),
     )
     .showHelpAfterError();
