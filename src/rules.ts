@@ -546,6 +546,22 @@ const MCP_CONTEXT_RE = /\bmcp\b|mcp[-_]|modelcontextprotocol|model context proto
 const issAware = (lower: string): boolean =>
   lower === 'iss' || lower === 'issuer' || lower.includes('issuer');
 
+// SDK symbols that SUPPLY `application_type` for you, so a registration body
+// that omits it is already correct and must NOT be flagged (SEP-837):
+//   python-sdk  src/mcp/shared/auth.py — `application_type: Literal["web",
+//               "native"] = "native"` on OAuthClientMetadata (comment cites SEP-837)
+//   typescript-sdk packages/client/src/client/auth.ts:902 —
+//               `application_type: clientMetadata.application_type ??
+//                deriveApplicationType(clientMetadata.redirect_uris)`
+// Only a HAND-ROLLED registration POST — one that never routes through these —
+// can actually put a body on the wire without the parameter.
+const SDK_SUPPLIES_APP_TYPE = new Set([
+  'OAuthClientMetadata',
+  'OAuthClientMetadataBase',
+  'OAuthClientProvider',
+  'OAuthClientInformationFull',
+]);
+
 // SDK request/notification *schema constants* — how real MCP SDK servers register
 // handlers (e.g. `server.setRequestHandler(InitializeRequestSchema, ...)`). Matching
 // the exact string literal alone misses these entirely.
@@ -780,6 +796,8 @@ export function applyRules(
       }
       if (norm === 'clientname') sawClientName = true;
       if (norm === 'applicationtype') sawApplicationType = true;
+      // An SDK metadata model / auth provider fills the parameter in itself.
+      if (t.kind === 'name' && SDK_SUPPLIES_APP_TYPE.has(v)) sawApplicationType = true;
     }
 
     // Rule 8k — a credential-store write whose key the analyzer classified as

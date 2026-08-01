@@ -23,35 +23,43 @@ enabled, default confidence (`low`), on 2026-07-23:
 File counts are candidate files (`.ts/.tsx/.js/.mjs/.cjs/.py`) under the
 scanned roots, excluding `node_modules`.
 
-## Results — v0.10.0 (21-rule engine, auth-hardening rules added)
+## Results — v0.10.1 (21-rule engine, auth-hardening rules added)
 
-Re-run 2026-08-01 with `mcp-vet` v0.10.0 on the SAME pinned corpus:
-**247 findings across 70 files** — the 243 from v0.9.0 (unchanged) plus 4 from
-the three new auth-hardening rules. By confidence: 100 high, 146 medium, 1 low.
+Re-run 2026-08-01 with `mcp-vet` v0.10.1 on the SAME pinned corpus:
+**244 findings across 67 files** — the 243 from v0.9.0 (unchanged) plus 1 from
+the three new auth-hardening rules. By confidence: 100 high, 143 medium, 1 low.
 
 | New pattern | Findings |
 | --- | --- |
-| `AUTH_DCR_NO_APPLICATION_TYPE` | 3 |
 | `AUTH_CREDENTIALS_NOT_ISSUER_KEYED` | 1 |
+| `AUTH_DCR_NO_APPLICATION_TYPE` | 0 |
 | `AUTH_ISS_UNVALIDATED` | 0 |
 
-Labeling of the 4 new findings (each reviewed against source):
+> **Correction — v0.10.0 overstated this table.** 0.10.0 reported 247 findings
+> and labeled three `AUTH_DCR_NO_APPLICATION_TYPE` hits in the python-sdk
+> examples as *true* positives. They were false positives, and the rule was
+> wrong, not just the label: both official SDKs supply `application_type` for
+> you. python-sdk `src/mcp/shared/auth.py` defaults it on
+> `OAuthClientMetadata` (*"SEP-837: OIDC application_type. Defaults to
+> `"native"`…"*), and typescript-sdk
+> `packages/client/src/client/auth.ts:902` derives it
+> (`clientMetadata.application_type ?? deriveApplicationType(clientMetadata.redirect_uris)`).
+> A body routed through either is already correct. 0.10.1 recognizes those SDK
+> symbols and only flags a **hand-rolled** registration POST; the three corpus
+> findings are gone, and the shapes are locked as true negatives
+> (`negatives/sdk_dcr_defaults.py`, `negatives/sdk-dcr-defaults.ts`). The
+> headline below is the corrected measurement.
 
-- **3 true positives** — all three `AUTH_DCR_NO_APPLICATION_TYPE` findings are
-  real: the python-sdk's `clients/simple-auth-client/…/main.py:204`,
-  `snippets/clients/oauth_client.py:65`, and `stories/oauth/client.py:29` each
-  build a Dynamic Client Registration body (`client_name` + `redirect_uris` +
-  `grant_types: ["authorization_code", …]`) with no `application_type` —
-  exactly the SEP-837 MUST. All three redirect to `localhost`, i.e. the
-  native-style URIs the missing `application_type: "native"` exists to protect.
+Labeling of the 1 new finding:
+
 - **1 false positive (counted, not suppressed):**
   `servers/simple-auth/mcp_simple_auth/simple_auth_provider.py:217` —
   `self.tokens[mcp_token] = AccessToken(…, client_id=…)`. That is a
   *server-side access-token cache* keyed by the token string, not a client
   persisting its registration credentials; SEP-2352 does not apply. The
   heuristic fired because the value carries a `client_id=` kwarg and the key
-  variable `mcp_token` matches the server-ish key shape. Same discipline as
-  ever: the FP goes in the table rather than getting defined away.
+  variable `mcp_token` matches the server-ish key shape. Known and unfixed as
+  of 0.10.1 — the FP goes in the table rather than getting defined away.
 - `AUTH_ISS_UNVALIDATED` produced **zero** corpus findings — correctly. The
   SDK example clients either read `iss` from the callback (`main.py`,
   `oauth_client.py` — the rule sees the token and stays quiet) or drive the
@@ -59,7 +67,7 @@ Labeling of the 4 new findings (each reviewed against source):
   literal in the file, which is the documented
   `adversarial/missed/auth-helper-indirection.ts` recall boundary.
 
-So the v0.10.0 headline on this corpus is **244/247 true positives (3 FP,
+So the v0.10.1 headline on this corpus is **241/244 true positives (3 FP,
 1.2%)** — the two v0.9.0 FPs carry over, plus the one above.
 
 ## Results — v0.9.0 (18-rule engine, final 2026-07-28 changelog)

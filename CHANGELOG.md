@@ -4,6 +4,39 @@ All notable changes to `mcp-vet` are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.1]
+
+A precision fix and a correction to a published number. 0.10.0's
+`AUTH_DCR_NO_APPLICATION_TYPE` fired on the correct, migrated form — and the
+benchmark then counted those hits as true positives, overstating precision.
+Both are fixed here.
+
+### Fixed
+
+- **`AUTH_DCR_NO_APPLICATION_TYPE` no longer flags SDK-routed registration.**
+  Both official SDKs supply `application_type` themselves: python-sdk
+  `src/mcp/shared/auth.py` defaults it on `OAuthClientMetadata` (*"SEP-837:
+  OIDC application_type. Defaults to `"native"` since MCP clients typically use
+  loopback redirect URIs"*), and typescript-sdk
+  `packages/client/src/client/auth.ts:902` derives it
+  (`clientMetadata.application_type ?? deriveApplicationType(clientMetadata.redirect_uris)`).
+  A body handed to either already carries the parameter, so the rule now
+  recognizes those symbols and fires only on a **hand-rolled** registration
+  POST. This was the single most common way Python MCP clients do DCR — every
+  such user would have seen a false positive on correct code. Locked as true
+  negatives: `negatives/sdk_dcr_defaults.py`, `negatives/sdk-dcr-defaults.ts`.
+
+### Changed — benchmark correction
+
+- **0.10.0 reported 247 findings / 244 TP / 3 FP (1.2%). That was wrong.** The
+  three `AUTH_DCR_NO_APPLICATION_TYPE` findings in the python-sdk examples were
+  false positives, not true ones — the examples are correct. With the rule
+  fixed, the same pinned corpus measures **244 findings, 241 true positives,
+  3 false positives (1.2%)**. The percentage coincidentally matches; the
+  composition does not. BENCHMARK.md carries the correction in full, and the
+  remaining `AUTH_CREDENTIALS_NOT_ISSUER_KEYED` FP (a server-side access-token
+  cache read as a credential store) is still counted, not suppressed.
+
 ## [0.10.0]
 
 The authorization-hardening release. 0.3.0 promised that changes with no

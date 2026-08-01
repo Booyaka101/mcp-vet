@@ -318,6 +318,27 @@ test('WORKED EXAMPLE migrated (application_type + iss guard) produces zero findi
   );
 });
 
+test('REGRESSION (0.10.1): SDK-routed registration supplies application_type and stays clean', () => {
+  // Both official SDKs fill the parameter in — python-sdk defaults it on
+  // OAuthClientMetadata, typescript-sdk derives it from redirect_uris — so a
+  // body routed through either is already SEP-837 correct. v0.10.0 flagged
+  // these (and miscounted the corpus hits as true positives); this locks it.
+  for (const f of ['negatives/sdk_dcr_defaults.py', 'negatives/sdk-dcr-defaults.ts']) {
+    const { findings } = scanTarget(f);
+    assert.equal(
+      findings.length,
+      0,
+      `${f} must stay clean, got ${JSON.stringify(findings.map((x) => `${x.line}:${x.patternId}`))}`,
+    );
+  }
+  // ...while a HAND-ROLLED registration POST still fires.
+  const { findings } = scanTarget('auth/worked-example.ts');
+  assert.ok(
+    findings.some((x) => x.patternId === 'AUTH_DCR_NO_APPLICATION_TYPE'),
+    'hand-rolled registration body is still flagged',
+  );
+});
+
 test('a plain OAuth client (no MCP context) stays clean — TS', () => {
   const { findings } = scanTarget('negatives/plain-oauth-client.ts');
   assert.equal(findings.length, 0, JSON.stringify(findings.map((f) => `${f.line}:${f.patternId}`)));
