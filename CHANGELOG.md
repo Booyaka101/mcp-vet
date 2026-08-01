@@ -4,6 +4,33 @@ All notable changes to `mcp-vet` are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.2]
+
+Closes the last counted false positive from the auth-hardening release.
+
+### Fixed
+
+- **`AUTH_CREDENTIALS_NOT_ISSUER_KEYED` no longer flags a server-side
+  access-token cache.** SEP-2352 governs the credentials a *client* persists
+  after registration; an authorization server caching
+  `AccessToken(…, client_id=…)` under the token it just minted is not that.
+  A token-shaped container or stored value is now exempt — unless the value
+  carries a `client_secret`, which only registration hands out, so a real
+  client credential store still fires. This was the FP counted against us in
+  0.10.0/0.10.1 (`simple_auth_provider.py:217`); locked by
+  `negatives/server_token_cache.py`.
+
+### Changed — benchmark
+
+- Same pinned corpus, re-measured: **243 findings, 241 true positives, 2 false
+  positives (0.8%)** — one finding fewer than 0.10.1, and a byte-for-byte
+  diff confirms the only change is the removed FP. The two remaining FPs are
+  the pre-existing v0.9.0 pair; the three auth rules contribute **zero**
+  corpus findings, which is the correct result on a corpus of compliant SDK
+  examples. Their positive behaviour is proven by `test/fixtures/auth/` and
+  `test/fixtures/dirty/` instead — BENCHMARK.md says so explicitly rather than
+  letting a quiet corpus imply the rules are inert. 90 tests (was 89).
+
 ## [0.10.1]
 
 A precision fix and a correction to a published number. 0.10.0's

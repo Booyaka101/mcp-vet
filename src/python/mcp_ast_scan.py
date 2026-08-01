@@ -42,6 +42,11 @@ STOREISH = re.compile(r"save|store|persist|upsert|cache|credential", re.I)
 CREDENTIALISH = re.compile(r"client_secret|client_id|credential", re.I)
 SERVERISH_KEY = re.compile(r"server|url|uri|resource|endpoint|host|base|target|mcp", re.I)
 ISSUERISH = re.compile(r"\biss\b|issuer", re.I)
+# A server-side ACCESS-TOKEN cache is not a client credential store: SEP-2352 is
+# about the credentials a client obtains from registration. `self.tokens[tok] =
+# AccessToken(..., client_id=...)` mentions client_id but is not that.
+TOKENISH = re.compile(r"(^|[._])tokens?([._]|$)|access_?token|oauth_?token|refresh_?token|bearer_?token", re.I)
+CLIENT_SECRETISH = re.compile(r"client_secret", re.I)
 
 
 def _func_mentions_caps(func):
@@ -204,6 +209,32 @@ def _subtree_mentions_credentials(node):
     return False
 
 
+def _mentions_client_secret(node):
+    for n in ast.walk(node):
+        if isinstance(n, ast.Name) and CLIENT_SECRETISH.search(n.id):
+            return True
+        if isinstance(n, ast.Attribute) and CLIENT_SECRETISH.search(n.attr):
+            return True
+        if isinstance(n, ast.Constant) and isinstance(n.value, str) and CLIENT_SECRETISH.search(n.value):
+            return True
+        if isinstance(n, ast.keyword) and n.arg and CLIENT_SECRETISH.search(n.arg):
+            return True
+    return False
+
+
+def _looks_like_token_store(base, value_node):
+    """True for a token cache rather than a persisted-registration-credential
+    store. A client_secret in the value settles it the other way — only
+    registration hands one out."""
+    if _mentions_client_secret(value_node):
+        return False
+    if TOKENISH.search(base or ""):
+        return True
+    if isinstance(value_node, ast.Call) and TOKENISH.search(_func_name(value_node.func)):
+        return True
+    return False
+
+
 def _expr_text(node):
     """Rough textual name of a key expression, for issuer/server classification."""
     if isinstance(node, ast.Name):
@@ -313,7 +344,8 @@ class Scanner:
                 if isinstance(tgt, ast.Subscript):
                     base = _expr_text(tgt.value)
                     if _subtree_mentions_credentials(node.value) or CREDENTIALISH.search(base):
-                        self._maybe_cred_key(tgt.slice)
+                        if not _looks_like_token_store(base, node.value):
+                            self._maybe_cred_key(tgt.slice)
 
         if isinstance(node, ast.Dict):
             for k, v in zip(node.keys, node.values):
@@ -337,7 +369,7 @@ class Scanner:
                     creds = True
                 else:
                     creds = any(_subtree_mentions_credentials(a) for a in value_side)
-                if creds:
+                if creds and not _looks_like_token_store(fname, node):
                     self._maybe_cred_key(node.args[0])
             # A call to ClientCapabilities(...) / ServerCapabilities(...) is itself
             # a capabilities container — its args/kwargs are structurally in-caps.

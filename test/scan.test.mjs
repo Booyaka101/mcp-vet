@@ -339,6 +339,34 @@ test('REGRESSION (0.10.1): SDK-routed registration supplies application_type and
   );
 });
 
+test('REGRESSION (0.10.2): a server-side access-token cache is not a credential store', () => {
+  // SEP-2352 covers credentials a CLIENT obtains from registration. An
+  // authorization server caching AccessToken(..., client_id=...) by the token
+  // it minted is not that — this was the last counted benchmark FP.
+  const { findings } = scanTarget('negatives/server_token_cache.py');
+  assert.equal(
+    findings.length,
+    0,
+    `token cache must stay clean, got ${JSON.stringify(findings.map((x) => `${x.line}:${x.patternId}`))}`,
+  );
+  // ...while a real client credential store still fires (a client_secret in the
+  // value is decisive: only registration hands one out).
+  const dir = mkdtempSync(join(tmpdir(), 'mcp-vet-tok-'));
+  const f = join(dir, 'creds.ts');
+  writeFileSync(
+    f,
+    ['// mcp client credential persistence', "tokenStore.set('mcp-server', { client_id, client_secret });"].join('\n'),
+    'utf8',
+  );
+  const res = runCli([f]);
+  rmSync(dir, { recursive: true, force: true });
+  assert.deepEqual(
+    res.findings.map((x) => x.patternId),
+    ['AUTH_CREDENTIALS_NOT_ISSUER_KEYED'],
+    'a client_secret in the value overrides the token-store exemption',
+  );
+});
+
 test('a plain OAuth client (no MCP context) stays clean — TS', () => {
   const { findings } = scanTarget('negatives/plain-oauth-client.ts');
   assert.equal(findings.length, 0, JSON.stringify(findings.map((f) => `${f.line}:${f.patternId}`)));

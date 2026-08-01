@@ -23,17 +23,27 @@ enabled, default confidence (`low`), on 2026-07-23:
 File counts are candidate files (`.ts/.tsx/.js/.mjs/.cjs/.py`) under the
 scanned roots, excluding `node_modules`.
 
-## Results — v0.10.1 (21-rule engine, auth-hardening rules added)
+## Results — v0.10.2 (21-rule engine, auth-hardening rules added)
 
-Re-run 2026-08-01 with `mcp-vet` v0.10.1 on the SAME pinned corpus:
-**244 findings across 67 files** — the 243 from v0.9.0 (unchanged) plus 1 from
-the three new auth-hardening rules. By confidence: 100 high, 143 medium, 1 low.
+Re-run 2026-08-01 with `mcp-vet` v0.10.2 on the SAME pinned corpus:
+**243 findings across 66 files** — identical to the v0.9.0 run. By confidence:
+100 high, 142 medium, 1 low.
 
 | New pattern | Findings |
 | --- | --- |
-| `AUTH_CREDENTIALS_NOT_ISSUER_KEYED` | 1 |
-| `AUTH_DCR_NO_APPLICATION_TYPE` | 0 |
 | `AUTH_ISS_UNVALIDATED` | 0 |
+| `AUTH_DCR_NO_APPLICATION_TYPE` | 0 |
+| `AUTH_CREDENTIALS_NOT_ISSUER_KEYED` | 0 |
+
+**The three auth-hardening rules produce zero findings on this corpus, and that
+is the correct result** — not a sign they do nothing. The official SDK examples
+are already compliant: both SDKs supply `application_type`, the example clients
+read `iss` from the callback, and the one apparent credential-store hit was an
+authorization-server token cache. The rules are deliberately conservative, and
+their positive behaviour is proven by fixtures instead — `test/fixtures/auth/`
+(a hand-rolled registration + un-validated redemption → exactly 2 findings) and
+`test/fixtures/dirty/` (all three, in both analyzers). A corpus of correct code
+*should* be quiet; the fixtures are what stop that quiet from being vacuous.
 
 > **Correction — v0.10.0 overstated this table.** 0.10.0 reported 247 findings
 > and labeled three `AUTH_DCR_NO_APPLICATION_TYPE` hits in the python-sdk
@@ -50,16 +60,17 @@ the three new auth-hardening rules. By confidence: 100 high, 143 medium, 1 low.
 > (`negatives/sdk_dcr_defaults.py`, `negatives/sdk-dcr-defaults.ts`). The
 > headline below is the corrected measurement.
 
-Labeling of the 1 new finding:
+Notes on the two rules that could have fired and correctly did not:
 
-- **1 false positive (counted, not suppressed):**
-  `servers/simple-auth/mcp_simple_auth/simple_auth_provider.py:217` —
-  `self.tokens[mcp_token] = AccessToken(…, client_id=…)`. That is a
-  *server-side access-token cache* keyed by the token string, not a client
-  persisting its registration credentials; SEP-2352 does not apply. The
-  heuristic fired because the value carries a `client_id=` kwarg and the key
-  variable `mcp_token` matches the server-ish key shape. Known and unfixed as
-  of 0.10.1 — the FP goes in the table rather than getting defined away.
+- `AUTH_CREDENTIALS_NOT_ISSUER_KEYED` flagged
+  `servers/simple-auth/mcp_simple_auth/simple_auth_provider.py:217` in 0.10.0
+  and 0.10.1 — `self.tokens[mcp_token] = AccessToken(…, client_id=…)`, an
+  *authorization-server access-token cache* keyed by the token it just minted,
+  not a client persisting registration credentials. It was counted as a false
+  positive in both releases; **0.10.2 fixes the rule** (a token-shaped
+  container or value is exempt unless the stored value carries a
+  `client_secret` — only registration hands one out). Locked by
+  `negatives/server_token_cache.py`.
 - `AUTH_ISS_UNVALIDATED` produced **zero** corpus findings — correctly. The
   SDK example clients either read `iss` from the callback (`main.py`,
   `oauth_client.py` — the rule sees the token and stays quiet) or drive the
@@ -67,8 +78,11 @@ Labeling of the 1 new finding:
   literal in the file, which is the documented
   `adversarial/missed/auth-helper-indirection.ts` recall boundary.
 
-So the v0.10.1 headline on this corpus is **241/244 true positives (3 FP,
-1.2%)** — the two v0.9.0 FPs carry over, plus the one above.
+So the v0.10.2 headline on this corpus is **241/243 true positives (2 FP,
+0.8%)** — exactly the two v0.9.0 FPs, both unrelated to the new rules. The
+auth-hardening rules added no false positives and no true positives here; the
+precision improvement over 0.10.0's *reported* 1.2% is the removal of three
+mislabeled findings and one genuine FP, not a change to the older rules.
 
 ## Results — v0.9.0 (18-rule engine, final 2026-07-28 changelog)
 

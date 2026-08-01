@@ -55,6 +55,13 @@ const STOREISH_SUBSTR = /save|store|persist|upsert|cache|credential/i;
 const CREDENTIALISH = /client_secret|clientSecret|client_id|clientId|credential/i;
 const SERVERISH_KEY = /server|url|uri|resource|endpoint|host|base|target|mcp/i;
 const ISSUERISH = /\biss\b|issuer/i;
+// A server-side ACCESS-TOKEN cache is not a client credential store: SEP-2352
+// covers the credentials a client obtains from registration. A client_secret in
+// the value settles it the other way — only registration hands one out.
+const TOKENISH = /(^|[._])tokens?([._]|$)|access_?token|oauth_?token|refresh_?token|bearer_?token/i;
+const CLIENT_SECRETISH = /client_secret|clientSecret/i;
+const looksLikeTokenStore = (containerText: string, valueText: string): boolean =>
+  !CLIENT_SECRETISH.test(valueText) && (TOKENISH.test(containerText) || TOKENISH.test(valueText));
 
 /**
  * Is `node` inside a call/constructor argument of something transport/client
@@ -351,6 +358,7 @@ export function analyzeTs(absPath: string, text: string): Token[] {
         if (args.length < 2) continue;
         const valueText = args.slice(1).map((a) => a.getText()).join(' ');
         if (!CREDENTIALISH.test(valueText) && !/credential/i.test(calleeName)) continue;
+        if (looksLikeTokenStore(expr.getText(), valueText)) continue;
         emitCredKey(args[0]);
       } catch {
         /* ignore */
@@ -365,6 +373,7 @@ export function analyzeTs(absPath: string, text: string): Token[] {
         const baseText = ea.getExpression().getText();
         const rhsText = bin.getRight().getText();
         if (!CREDENTIALISH.test(rhsText) && !/credential/i.test(baseText)) continue;
+        if (looksLikeTokenStore(baseText, rhsText)) continue;
         const arg = ea.getArgumentExpression();
         if (arg) emitCredKey(arg);
       } catch {
