@@ -39,6 +39,7 @@ const ALL = [
   'AUTH_ISS_UNVALIDATED',
   'AUTH_DCR_NO_APPLICATION_TYPE',
   'AUTH_CREDENTIALS_NOT_ISSUER_KEYED',
+  'SSE_TRANSPORT_DEPRECATED',
 ];
 
 // The three authorization-hardening rules added in 0.10.0 (final changelog
@@ -92,7 +93,7 @@ function runCli(args, env = {}) {
 // Core detection
 // ---------------------------------------------------------------------------
 
-test('detects all 21 pattern types across the fixtures (exit 1)', () => {
+test('detects all 22 pattern types across the fixtures (exit 1)', () => {
   const res = runCli([fixtures]);
   const detected = new Set(res.findings.map((f) => f.patternId));
   for (const pid of ALL) {
@@ -136,6 +137,7 @@ test('severity classification is correct', () => {
     'AUTH_ISS_UNVALIDATED',
     'AUTH_DCR_NO_APPLICATION_TYPE',
     'AUTH_CREDENTIALS_NOT_ISSUER_KEYED',
+    'SSE_TRANSPORT_DEPRECATED',
   ]) {
     assert.deepEqual([...sev(pid)], ['DEPRECATED'], `${pid} is DEPRECATED`);
   }
@@ -397,6 +399,100 @@ test('REGRESSION (0.10.3): an authorization SERVER implementing DCR is not a cli
     0,
     `server-side DCR handler must stay clean, got ${JSON.stringify(findings.map((f) => `${f.line}:${f.patternId}`))}`,
   );
+});
+
+// ---------------------------------------------------------------------------
+// v0.10.4: SSE_TRANSPORT_DEPRECATED — the HTTP+SSE transport (SEP-2596), the
+// sixth and last uncovered row of the deprecated-features registry
+// ---------------------------------------------------------------------------
+
+test('SSE fixtures produce ONLY SSE_TRANSPORT_DEPRECATED findings at the exit-0 tier', () => {
+  const res = runCli([join(fixtures, 'sse')]);
+  assert.equal(res.status, 0, `DEPRECATED tier never fails the build\n${res.stderr}`);
+  assert.ok(res.findings.length > 0, 'the sse fixtures fire');
+  for (const f of res.findings) {
+    assert.equal(f.patternId, 'SSE_TRANSPORT_DEPRECATED', `${f.file}:${f.line} is ${f.patternId}`);
+    assert.equal(f.severity, 'DEPRECATED');
+    assert.ok(f.docUrl.endsWith('/deprecated'), `registry docUrl (got ${f.docUrl})`);
+    assert.match(f.explanation, /SEP-2596/);
+    assert.match(f.explanation, /Three months after SEP-2596 reaches Final/, 'removal clause quoted verbatim, not computed');
+    assert.match(f.after, /StreamableHTTPServerTransport/);
+  }
+});
+
+test('SDK SSEServerTransport: import line (class + module path) AND usage site are flagged, all high', () => {
+  const { findings } = scanTarget('sse/sdk-transport.ts');
+  assert.equal(findings.length, 3, JSON.stringify(findings.map((f) => `${f.line}:${f.column}:${f.patternId}`)));
+  assert.ok(findings.every((f) => f.patternId === 'SSE_TRANSPORT_DEPRECATED' && f.confidence === 'high'));
+  const lines = new Set(findings.map((f) => f.line));
+  assert.equal(lines.size, 2, 'import line + usage line');
+});
+
+test('aliased SSEClientTransport import is flagged at the import AND the aliased usage site', () => {
+  const { findings } = scanTarget('sse/sdk-transport-aliased.ts');
+  assert.equal(findings.length, 3, JSON.stringify(findings.map((f) => `${f.line}:${f.column}:${f.patternId}`)));
+  assert.ok(findings.every((f) => f.patternId === 'SSE_TRANSPORT_DEPRECATED' && f.confidence === 'high'));
+  const usage = findings.find((f) => f.before.includes('new LegacyTransport'));
+  assert.ok(usage, 'aliased usage site flagged');
+});
+
+test('hand-rolled two-endpoint SSE server: exactly ONE finding, anchored at the endpoint-event write', () => {
+  const { findings } = scanTarget('sse/handrolled-sse.ts');
+  assert.equal(findings.length, 1, JSON.stringify(findings.map((f) => `${f.line}:${f.patternId}`)));
+  assert.equal(findings[0].patternId, 'SSE_TRANSPORT_DEPRECATED');
+  assert.equal(findings[0].confidence, 'medium');
+  assert.match(findings[0].before, /event: endpoint/, 'anchored at the endpoint-event line');
+});
+
+test('python-sdk SseServerTransport + connect_sse + handle_post_message are flagged (AST path)', () => {
+  const { pythonAvailable } = require('../dist/py-analyzer.js');
+  if (!pythonAvailable()) return; // module-path emission + attribute context need the AST path
+  const { findings } = scanTarget('sse/sse_server.py');
+  assert.equal(findings.length, 5, JSON.stringify(findings.map((f) => `${f.line}:${f.confidence}:${f.patternId}`)));
+  assert.ok(findings.every((f) => f.patternId === 'SSE_TRANSPORT_DEPRECATED'));
+  assert.equal(findings.filter((f) => f.confidence === 'high').length, 3, 'class ×2 + module path');
+  assert.equal(findings.filter((f) => f.confidence === 'medium').length, 2, 'connect_sse + handle_post_message');
+});
+
+test('FastMCP transport="sse" (high) and sse_app() (medium) are flagged', () => {
+  const { pythonAvailable } = require('../dist/py-analyzer.js');
+  if (!pythonAvailable()) return; // the kwarg flag needs the AST path
+  const { findings } = scanTarget('sse/fastmcp_sse.py');
+  assert.equal(findings.length, 2, JSON.stringify(findings.map((f) => `${f.line}:${f.confidence}:${f.patternId}`)));
+  const run = findings.find((f) => f.before.includes('transport="sse"'));
+  assert.ok(run, 'mcp.run(transport="sse") flagged');
+  assert.equal(run.confidence, 'high', 'literal transport key is high');
+  const sseApp = findings.find((f) => f.before.includes('sse_app'));
+  assert.ok(sseApp, 'sse_app() flagged');
+  assert.equal(sseApp.confidence, 'medium');
+});
+
+test('regex fallback (no Python) still detects the HTTP+SSE transport surfaces', () => {
+  const res = runCli(
+    [join(fixtures, 'sse', 'sse_server.py'), '--no-files', '--github-annotations'],
+    { MCP_VET_NO_PYTHON: '1' },
+  );
+  assert.match(res.stdout, /SSE_TRANSPORT_DEPRECATED/);
+});
+
+test('the EXISTING negatives/sse-client.ts stays at zero findings (context gate intact)', () => {
+  const { findings } = scanTarget('negatives/sse-client.ts');
+  assert.equal(findings.length, 0, JSON.stringify(findings.map((f) => `${f.line}:${f.patternId}`)));
+});
+
+test('Streamable HTTP servers and a plain SSE feed stay clean — text/event-stream ALONE never fires', () => {
+  for (const f of [
+    'negatives/streamable-http-server.ts',
+    'negatives/streamable_http_server.py',
+    'negatives/plain_sse_feed.py',
+  ]) {
+    const { findings } = scanTarget(f);
+    assert.equal(
+      findings.length,
+      0,
+      `${f} must stay clean, got ${JSON.stringify(findings.map((x) => `${x.line}:${x.patternId}`))}`,
+    );
+  }
 });
 
 test('a plain OAuth client (no MCP context) stays clean — TS', () => {
@@ -692,7 +788,7 @@ test('SARIF output is valid 2.1.0 with rules and results', () => {
   rmSync(out, { recursive: true, force: true });
   assert.equal(s.version, '2.1.0');
   assert.equal(s.runs[0].tool.driver.name, 'mcp-vet');
-  assert.equal(s.runs[0].tool.driver.rules.length, 21);
+  assert.equal(s.runs[0].tool.driver.rules.length, 22);
   assert.ok(s.runs[0].results.length > 0);
   for (const r of s.runs[0].results) {
     assert.ok(['error', 'warning'].includes(r.level));

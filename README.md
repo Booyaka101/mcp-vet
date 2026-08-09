@@ -61,7 +61,7 @@ sse-polling.ts:107:13    BREAKING   MCP_SESSION_ID [medium]
 6 finding(s): 5 BREAKING, 1 DEPRECATED
 ```
 
-Note it catches the `sessionIdGenerator` session usage — the real signal in SDK-based servers, which usually never write the literal `Mcp-Session-Id` string. And it stays quiet where it should: the `Mcp-Session-Id` mentioned in a *comment*, the `initialize` in a comment in `dual-era.ts`, and the `sampling/createMessage` in `sampling.ts` (which appears only in comments and behind the `requestSampling()` helper) are all left alone. That precision — structural AST checks, not text matching — is what keeps the noise down on a real codebase: **6 findings, 0 false positives on these files.** (Across the full labeled corpus it's 241/243 true positives — see [BENCHMARK.md](./BENCHMARK.md).)
+Note it catches the `sessionIdGenerator` session usage — the real signal in SDK-based servers, which usually never write the literal `Mcp-Session-Id` string. And it stays quiet where it should: the `Mcp-Session-Id` mentioned in a *comment*, the `initialize` in a comment in `dual-era.ts`, and the `sampling/createMessage` in `sampling.ts` (which appears only in comments and behind the `requestSampling()` helper) are all left alone. That precision — structural AST checks, not text matching — is what keeps the noise down on a real codebase: **6 findings, 0 false positives on these files.** (Across the full labeled corpus it's 256/258 true positives — see [BENCHMARK.md](./BENCHMARK.md).)
 
 ---
 
@@ -104,6 +104,7 @@ Removal windows come from the [deprecated-features registry](https://modelcontex
 | `LOGGING_CAP` | `logging` capability | first revision released on or after 2027-07-28 |
 | `INCLUDE_CONTEXT_VALUES` | `includeContext` set to `"thisServer"` / `"allServers"` | follows Sampling |
 | `OAUTH_DCR` | RFC7591 dynamic client registration (`registration_endpoint`, …) → Client ID Metadata Documents | first revision released on or after 2027-07-28 |
+| `SSE_TRANSPORT_DEPRECATED` | the HTTP+SSE transport (SEP-2596): `SSEServerTransport` / `SSEClientTransport` / `SseServerTransport` and the SDK sse module paths (ungated); `sse_client` / `sse_app` / `connect_sse` / `handle_post_message` and a literal `transport: 'sse'` (MCP-context-gated); the hand-rolled two-endpoint shape (`text/event-stream` **plus** an `event: endpoint` write — `text/event-stream` alone never fires) → Streamable HTTP | three months after SEP-2596 reaches Final (quoted verbatim from the registry — the SEP is Final, but the registry still states the relative clause, so mcp-vet computes nothing) |
 
 Three more report at this exit-0 tier without being deprecations: the final
 changelog's **authorization-hardening MUSTs** (Minor changes 7/8/9). They are
@@ -382,7 +383,7 @@ The stateless verdict is **cross-checked** before it becomes a violation: `requi
 
 ### `--spec 2026-07-28` — the extra compliance suite
 
-`--spec` is a shorthand for `--spec-version` that **also** runs twelve additional wire-level checks *on top of* the ones above. `--spec 2026-07-28` vets against the new revision **and** adds the suite; plain `--spec-version 2026-07-28` is unchanged and never runs it, so existing CI invocations keep their exact behavior.
+`--spec` is a shorthand for `--spec-version` that **also** runs thirteen additional wire-level checks *on top of* the ones above. `--spec 2026-07-28` vets against the new revision **and** adds the suite; plain `--spec-version 2026-07-28` is unchanged and never runs it, so existing CI invocations keep their exact behavior.
 
 ```bash
 # full readiness AND the extra compliance suite
@@ -403,6 +404,7 @@ npx @booyaka/mcp-vet probe --spec 2026-07-28 node ./dist/server.js
 | `ping-still-answered` | 🟡 WARN | sends a `ping` and flags a server that returns a **result** instead of `-32601` — the method is removed |
 | `dcr-still-advertised` | 🟡 WARN | fetches the authorization-server metadata (RFC 9728 protected-resource lookup, then RFC 8414, falling back to the MCP origin) and flags one that still advertises `registration_endpoint` with **no** `client_id_metadata_document_supported` alternative — DCR is Deprecated in favour of Client ID Metadata Documents (PR #2858) |
 | `auth-metadata-missing-iss` | 🟡 WARN | flags authorization-server metadata that omits `authorization_response_iss_parameter_supported` — clients cannot rely on the RFC 9207 `iss` mix-up protection SEP-2468 requires them to validate |
+| `legacy-sse-transport` | 🟡 WARN | issues a fresh `GET` on the endpoint with `Accept: text/event-stream` after the standard probe completes, and flags a server whose answer is a 2xx `text/event-stream` stream that actually delivers an `event: endpoint` frame — the legacy two-endpoint HTTP+SSE transport (Deprecated, SEP-2596; the GET endpoint itself is removed by SEP-2575). A 405/404/non-SSE/JSON answer is a clean note; an SSE stream that never names an endpoint before `--timeout` is inconclusive, never a violation. Skipped for **stdio** targets |
 
 Every one of these is cross-checked the same way the rest of the probe is — an
 inconclusive outcome is reported as a note, never as a violation, and a dead or
@@ -429,7 +431,7 @@ cover ground the `--spec 2026-07-28` suite covers:
 | Tool | What it is | Overlap |
 | --- | --- | --- |
 | [`@modelcontextprotocol/conformance`](https://github.com/modelcontextprotocol/conformance) — `npx @modelcontextprotocol/conformance server --url <url>` | The **official** wire test suite. Its README notes that *"dated versions through 2025-11-25 use the stateful lifecycle (initialize handshake), while the 2026 draft (2026-07-28) uses the stateless lifecycle (per-request `_meta`)"* | The authority on wire conformance. If you can boot your server, **run it** — it is more complete at the protocol level than any third-party probe, mcp-vet's included |
-| [`mcp-spec-check`](https://www.npmjs.com/package/mcp-spec-check) (Roee-Tsur) | Zero-install black-box URL probe for 2026-07-28 readiness | Already ships cache-metadata, MRTR and resources-subscribe checks — genuinely prior art for three of mcp-vet's ten `--spec` checks |
+| [`mcp-spec-check`](https://www.npmjs.com/package/mcp-spec-check) (Roee-Tsur) | Zero-install black-box URL probe for 2026-07-28 readiness | Already ships cache-metadata, MRTR and resources-subscribe checks — genuinely prior art for three of mcp-vet's thirteen `--spec` checks |
 | [`mcpfit`](https://github.com/printemps-tokyo/mcpfit) (printemps-tokyo) | Go CLI auditing a running server against the stateless spec | Already ships a `cache-hints` check for `ttlMs`/`cacheScope` |
 
 **The uncontested claim is the other half: static source analysis.** mcp-vet
@@ -605,7 +607,7 @@ Some linters let you "grandfather" existing findings so CI stays green. `mcp-vet
 
 - **TypeScript / JavaScript** — parsed with [`ts-morph`](https://ts-morph.com); the analyzer walks the AST and emits normalized tokens (string literals, signed numeric literals, identifiers, object keys) annotated with structural capability context and registration context.
 - **Python** — a bundled script (`dist/python/mcp_ast_scan.py`) runs `ast.parse` + a context-tracking walk in a subprocess (chunked for large repos) and emits the same token shape (with character-accurate columns). When no interpreter exists, a regex fallback covers the deterministic rules.
-- A single rule engine applies all 21 rules to those tokens, so TS and Python behave identically. Findings are de-duplicated per (line, column, rule) and can be suppressed inline.
+- A single rule engine applies all 22 rules to those tokens, so TS and Python behave identically. Findings are de-duplicated per (line, column, rule) and can be suppressed inline.
 
 It matches the ways real servers are actually written, not just raw method strings:
 
@@ -616,7 +618,7 @@ It matches the ways real servers are actually written, not just raw method strin
 - **aliased imports** — `import { InitializeRequestSchema as Init }` (TS) and `from mcp.types import RootsCapability as RC` (Python) are resolved back to their canonical names, so both the import line and the aliased usage sites are flagged. Namespace access (`types.InitializeRequestSchema`) is matched too.
 - **client-side session ownership** — a client transport constructed with a real `sessionId`/`session_id`, or a read of `transport.sessionId`; the migrated `sessionId: undefined` / `session_id=None` forms are recognized as benign.
 
-**Measured, not vibes:** scanned against the official MCP reference servers and both SDK example suites at pinned commits — 447 files / ~44k LOC — findings labeled against source: **243 findings, 241 true positives, 2 false positives (0.8%)** with the 21-rule engine (the v0.4.0 9-rule run was 105/104/1 on the same corpus; the jump is the final removals firing on the SDKs' own pre-final examples). The three auth-hardening rules contribute zero findings here — correctly, since the SDK examples are compliant — so their behaviour is proven by fixtures instead. (v0.10.0 reported 247/244/3 by miscounting three DCR findings as true positives; 0.10.1 fixed that rule and 0.10.2 the remaining FP — see the correction note in [BENCHMARK.md](./BENCHMARK.md).) Corpus, commit SHAs, per-pattern counts, labeled negatives, and the recall discussion are in [BENCHMARK.md](./BENCHMARK.md).
+**Measured, not vibes:** scanned against the official MCP reference servers and both SDK example suites at pinned commits — 447 files / ~44k LOC — findings labeled against source: **258 findings, 256 true positives, 2 false positives (0.8%)** with the 22-rule engine (the v0.4.0 9-rule run was 105/104/1 on the same corpus; the jump is the final removals firing on the SDKs' own pre-final examples). The three auth-hardening rules contribute zero findings here — correctly, since the SDK examples are compliant — so their behaviour is proven by fixtures instead. (v0.10.0 reported 247/244/3 by miscounting three DCR findings as true positives; 0.10.1 fixed that rule and 0.10.2 the remaining FP — see the correction note in [BENCHMARK.md](./BENCHMARK.md).) Corpus, commit SHAs, per-pattern counts, labeled negatives, and the recall discussion are in [BENCHMARK.md](./BENCHMARK.md).
 
 ### Known limitations
 
@@ -630,6 +632,7 @@ These are locked into the test suite as `test/fixtures/adversarial/missed/` — 
 - **Python SDK decorator/method registration** — a handler wired purely as `@server.list_roots()` or a bare `session.list_roots()` call (with no capability declaration or method string in the file) is not matched, to avoid false positives on generic method names. The capability declaration in the same server is normally caught.
 - **Auth helper indirection** — when both the code redemption and the iss validation live inside a third-party helper (`oauth.authorizationCodeGrantRequest(...)`), the file contains no `authorization_code`/`grant_type`/`iss` token and `AUTH_ISS_UNVALIDATED` can neither fire nor verify (`missed/auth-helper-indirection.ts`).
 - **Computed credential-store keys** — `store.set(key_for(server_url), creds)` is skipped rather than guessed at, even when the computed key is in fact a server URL (`missed/computed_cred_key.py`).
+- **Dynamic transport selection** — `mcp.run({ transport })` where the name comes from a variable or environment never puts the literal `'sse'` under the `transport` key, so `SSE_TRANSPORT_DEPRECATED` cannot fire (`missed/dynamic-transport.ts`). Template-literal SSE frames (`` res.write(`event: endpoint…${id}`) ``) are likewise invisible to the string tokenizer — write the frame name as a plain literal or catch it at runtime with `probe --spec` (`legacy-sse-transport`).
 - The **regex fallback** (no Python interpreter) covers only the deterministic rules at reduced precision (the auth-hardening rules need the AST analyzers); install Python for full `.py` fidelity.
 
 This is the recall boundary of static analysis: it proves known patterns are *absent*, not that the server *speaks the new wire contract*. Cover the difference with the [runtime conformance fixtures](#runtime-conformance-fixtures).
@@ -669,10 +672,10 @@ Also exported: `renderJson` / `renderMarkdown` / `renderSarif`, `RULES`, and the
 ```bash
 npm install      # installs deps and builds (via prepare)
 npm run build    # tsc -> dist/ + copies the Python script
-npm test         # builds, then runs the Node.js built-in test runner (92 tests)
+npm test         # builds, then runs the Node.js built-in test runner (105 tests)
 ```
 
-Test fixtures live in `test/fixtures/` (dirty TS + Python servers including `dirty/` with one instance of every final-changelog pattern, a `clean/` server with zero violations, `negatives/` true-negatives incl. the plain-OAuth pair locking the auth-rule context gate, an `auth/` worked example + its migrated twin, a `confidence/` gradient, and `suppress/` cases). Runtime-probe fixtures live in `test/probe-fixtures/` — minimal stdio + Streamable-HTTP MCP servers: one returning draft-07 schemas, one requiring the initialize handshake, one fully migrated 2026-07-28-native (stateless + `server/discover` + `-32602`), a `server-partial.mjs` with one deliberate migration defect per mode (`legacy-error-code` / `no-discover` / `bad-discover`), and the HTTP fixture's `auth-legacy` / `auth-migrated` modes serving RFC 8414 metadata for the two auth checks.
+Test fixtures live in `test/fixtures/` (dirty TS + Python servers including `dirty/` with one instance of every final-changelog pattern, a `clean/` server with zero violations, `negatives/` true-negatives incl. the plain-OAuth pair locking the auth-rule context gate, an `auth/` worked example + its migrated twin, an `sse/` directory covering the deprecated HTTP+SSE transport in both SDKs plus the hand-rolled two-endpoint shape, a `confidence/` gradient, and `suppress/` cases). Runtime-probe fixtures live in `test/probe-fixtures/` — minimal stdio + Streamable-HTTP MCP servers: one returning draft-07 schemas, one requiring the initialize handshake, one fully migrated 2026-07-28-native (stateless + `server/discover` + `-32602`), a `server-partial.mjs` with one deliberate migration defect per mode (`legacy-error-code` / `no-discover` / `bad-discover`), and the HTTP fixture's `auth-legacy` / `auth-migrated` modes serving RFC 8414 metadata for the two auth checks.
 
 ## License
 

@@ -316,6 +316,18 @@ class Scanner:
                 self.tokens.append(
                     {"kind": "name", "value": a.name.rsplit(".", 1)[-1], "line": line, "col": self._col(a) or self._col(node)}
                 )
+                # `import mcp.server.sse` — the dotted path itself is a signal
+                # (module-path rules match on it), so surface it whole too.
+                if "." in a.name:
+                    self.tokens.append(
+                        {"kind": "string", "value": a.name, "line": line, "col": self._col(a) or self._col(node)}
+                    )
+            # `from mcp.server.sse import X` — surface the module path, which
+            # otherwise never appears as a token (it is not a quoted string).
+            if isinstance(node, ast.ImportFrom) and node.module and "." in node.module:
+                self.tokens.append(
+                    {"kind": "string", "value": node.module, "line": node.lineno, "col": self._col(node)}
+                )
 
     def _maybe_cred_key(self, key_node):
         """Emit a credKey token when `key_node` is clearly NOT issuer-derived.
@@ -359,6 +371,12 @@ class Scanner:
                         tok = {"kind": "key", "value": k.value, "line": k.lineno, "col": self._col(k)}
                         if k.value in CAP:
                             tok["inCapabilities"] = in_caps
+                        # {"transport": "sse"} / {"event": "endpoint"} — the
+                        # literal forms of the HTTP+SSE transport (SEP-2596).
+                        if isinstance(v, ast.Constant) and v.value == "sse" and re.search(r"transport", k.value, re.I):
+                            tok["transportSse"] = True
+                        if isinstance(v, ast.Constant) and v.value == "endpoint" and k.value == "event":
+                            tok["sseEndpointEvent"] = True
                         self.tokens.append(tok)
                 child_caps = in_caps or (isinstance(k, ast.Constant) and k.value == "capabilities")
                 self.visit(v, child_caps)
@@ -398,6 +416,12 @@ class Scanner:
                     # (event_store=..., resumption_token=...) — removed 2026-07-28.
                     if kw.arg in SSE_KWARGS and TRANSPORTISH.search(_func_name(node.func)):
                         tok["transportCtx"] = True
+                    # mcp.run(transport="sse") / send(event="endpoint") — the
+                    # literal kwarg forms of the HTTP+SSE transport (SEP-2596).
+                    if isinstance(kw.value, ast.Constant) and kw.value.value == "sse" and re.search(r"transport", kw.arg, re.I):
+                        tok["transportSse"] = True
+                    if isinstance(kw.value, ast.Constant) and kw.value.value == "endpoint" and kw.arg == "event":
+                        tok["sseEndpointEvent"] = True
                     self.tokens.append(tok)
                 child_caps = caps_ctx or (kw.arg == "capabilities")
                 self.visit(kw.value, child_caps)

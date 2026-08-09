@@ -63,6 +63,39 @@ corpus was systematically blind to a whole class of defect. Both wild false
 positives are now regression fixtures (`negatives/server_dcr_handler.py`,
 `auth/handrolled-client.py`).
 
+## Results — v0.10.4 (22-rule engine, HTTP+SSE transport rule added)
+
+Re-run 2026-08-09 with `mcp-vet` v0.10.4 on the SAME pinned corpus:
+**258 findings across 68 files** — the 243 findings of the v0.10.2/0.10.3 run
+plus **15 new `SSE_TRANSPORT_DEPRECATED` findings**. A byte-for-byte diff of
+the non-SSE findings against the 0.10.3 run is **identical** — zero drift in
+the other 21 rules.
+
+Every new finding, hand-labeled against source (all 15 are true positives, 0
+false positives):
+
+| File | Findings | Label | What it is |
+| --- | ---: | --- | --- |
+| typescript-sdk `everything/transports/sse.ts` | 7 | **TP ×7** | the SDK's own legacy SSE transport example: `SSEServerTransport` import from `@modelcontextprotocol/sdk/server/sse.js` (class + module path on the import line) and five usage sites (type annotations, `transports.get(...) as SSEServerTransport`, `new SSEServerTransport("/message", res)`) |
+| typescript-sdk `guides/clients/connect.examples.ts` | 2 | **TP ×2** | `SSEClientTransport` imported and passed to `client.connect(new SSEClientTransport(new URL(url)))` |
+| python-sdk `clients/simple-auth-client/…/main.py` | 3 | **TP ×3** | `from mcp.client.sse import sse_client` (module path + helper name) and the `async with sse_client(...)` usage |
+| python-sdk `snippets/clients/url_elicitation_client.py` | 3 | **TP ×3** | same shape: `from mcp.client.sse import sse_client` + usage |
+
+Two findings each on the two Python import lines and the two TS import lines
+are the documented column-level (not line-level) dedup: the module path and
+the imported symbol are separate signals at separate columns.
+
+So the v0.10.4 headline on this corpus is **256/258 true positives (2 FP,
+0.8%)** — the two FPs are the pre-existing v0.9.0 pair, untouched. The
+hand-rolled two-endpoint shape (`text/event-stream` + an `event: endpoint`
+write) and the `transport="sse"` literal contribute zero corpus findings —
+correctly, since the corpus's SSE usage is all SDK-routed — and their positive
+behaviour is proven by `test/fixtures/sse/` instead (`handrolled-sse.ts`,
+`fastmcp_sse.py`), with `negatives/streamable-http-server.ts` /
+`negatives/streamable_http_server.py` / `negatives/plain_sse_feed.py` locking
+that `text/event-stream` alone — which every correct Streamable HTTP server
+contains — never fires.
+
 ## Results — v0.10.2 (21-rule engine, auth-hardening rules added)
 
 Re-run 2026-08-01 with `mcp-vet` v0.10.2 on the SAME pinned corpus:

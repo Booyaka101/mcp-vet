@@ -721,7 +721,80 @@ async function discoverAuthServerMetadata(
 }
 
 /**
- * Runs the twelve `--spec 2026-07-28` compliance checks and returns the
+ * Sniff the legacy two-endpoint HTTP+SSE transport (SEP-2596): GET the MCP
+ * endpoint with `Accept: text/event-stream` on a fresh connection and watch for
+ * an `event: endpoint` frame. Only a 2xx `text/event-stream` response that
+ * actually delivers the endpoint event is 'legacy' — 405/404/non-SSE/JSON
+ * answers are 'clean' (a correctly migrated Streamable HTTP server has no GET
+ * stream), and everything else (network failure, an SSE stream that never
+ * names an endpoint before the timeout) is 'inconclusive', never a violation.
+ * The stream and its socket are aborted before returning so the event loop
+ * drains (no lingering connection, no process.exit).
+ */
+async function sniffLegacySse(
+  url: string,
+  timeoutMs: number,
+): Promise<{ kind: 'legacy' | 'clean' | 'inconclusive'; detail: string }> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method: 'GET',
+      headers: { accept: 'text/event-stream' },
+      signal: ctrl.signal,
+    });
+  } catch (err) {
+    clearTimeout(timer);
+    return { kind: 'inconclusive', detail: `GET failed (${(err as Error).message})` };
+  }
+  try {
+    const ct = res.headers.get('content-type') ?? '';
+    if (!res.ok || !ct.includes('text/event-stream')) {
+      // Drain/cancel whatever body exists so the connection is released.
+      return {
+        kind: 'clean',
+        detail: `GET answered ${res.status}${ct ? ` (content-type ${ct})` : ''} — no legacy SSE stream`,
+      };
+    }
+    const reader = res.body?.getReader();
+    if (!reader) {
+      return { kind: 'inconclusive', detail: 'SSE response had no readable body' };
+    }
+    const decoder = new TextDecoder();
+    let buf = '';
+    try {
+      while (buf.length < 65536) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        if (/^event:\s*endpoint\s*$/m.test(buf)) {
+          return {
+            kind: 'legacy',
+            detail: `GET ${url} → ${res.status} text/event-stream delivering an \`event: endpoint\` frame`,
+          };
+        }
+      }
+    } catch {
+      /* stream aborted (timeout) or broke — fall through to inconclusive */
+    }
+    return {
+      kind: 'inconclusive',
+      detail: 'GET returned an SSE stream but no `event: endpoint` frame arrived before the timeout',
+    };
+  } finally {
+    clearTimeout(timer);
+    ctrl.abort(); // destroy the stream and its socket so the event loop drains
+    try {
+      await res.body?.cancel();
+    } catch {
+      /* already aborted/consumed */
+    }
+  }
+}
+
+/**
+ * Runs the thirteen `--spec 2026-07-28` compliance checks and returns the
  * findings plus human-readable notes to fold into the ProbeResult:
  *   1. stateless-no-session          ERROR — a no-session request must not be refused
  *   2. stateless-no-init             ERROR — a no-handshake request must be answered
@@ -737,6 +810,8 @@ async function discoverAuthServerMetadata(
  *                                            with no CIMD alternative (PR #2858)
  *  12. auth-metadata-missing-iss     WARN  — AS metadata omits
  *                                            authorization_response_iss_parameter_supported (SEP-2468)
+ *  13. legacy-sse-transport          WARN  — GET on the endpoint serves the legacy
+ *                                            two-endpoint HTTP+SSE transport (SEP-2596)
  */
 async function runSpecChecks(
   target: ProbeTarget,
@@ -1046,6 +1121,28 @@ async function runSpecChecks(
           );
           notes.push('auth-metadata-missing-iss: WARN — metadata omits authorization_response_iss_parameter_supported');
         }
+      }
+    }
+
+    // Check 13 — legacy-sse-transport (SEP-2596). A fresh GET on the endpoint
+    // after the existing path completes; only an actually-delivered
+    // `event: endpoint` SSE frame is a WARN — everything else is a clean or
+    // inconclusive note, never a violation.
+    if (!isHttp) {
+      notes.push(
+        'legacy-sse-transport: skipped — the HTTP+SSE transport is an HTTP concern; target is stdio',
+      );
+    } else {
+      const sse = await sniffLegacySse((target as { url: string }).url, opts.timeoutMs);
+      if (sse.kind === 'legacy') {
+        findings.push(runtimeFinding('legacy-sse-transport', label, sse.detail));
+        notes.push(
+          'legacy-sse-transport: WARN — GET returned an SSE stream whose first event is `endpoint` (legacy HTTP+SSE transport)',
+        );
+      } else if (sse.kind === 'clean') {
+        notes.push(`legacy-sse-transport: clean — ${sse.detail}`);
+      } else {
+        notes.push(`legacy-sse-transport: inconclusive — ${sse.detail}`);
       }
     }
   } finally {

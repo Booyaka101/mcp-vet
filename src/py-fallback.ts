@@ -15,6 +15,13 @@ export function regexFallbackTokens(text: string): Token[] {
   const numRe = /-?\b\d+\b/g;
   const idRe = /[A-Za-z_][A-Za-z0-9_]*/g;
   const capKeyRe = /\b(roots|sampling|logging)\s*[:=]/g;
+  // HTTP+SSE transport surfaces (SSE_TRANSPORT_DEPRECATED, SEP-2596). The
+  // module path is not a quoted string in Python, so it needs its own match;
+  // the literal transport/event forms are marked like the AST analyzers do.
+  const sseModuleRe = /\bmcp\.(?:server|client)\.sse\b/g;
+  const sseHelperRe = /^(?:sse_client|sse_app|connect_sse|handle_post_message)$/;
+  const sseTransportValRe = /\btransport['"]?\s*[:=]\s*(['"])sse\1/g;
+  const sseEndpointValRe = /\bevent['"]?\s*[:=]\s*(['"])endpoint\1/g;
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
@@ -39,11 +46,34 @@ export function regexFallbackTokens(text: string): Token[] {
       if (/mcpsessionid/i.test(v)) {
         tokens.push({ kind: 'name', value: v, line: ln, col: m.index + 1 });
       }
+      const norm = v.toLowerCase().replace(/[-_]/g, '');
+      if (
+        norm === 'sseservertransport' ||
+        norm === 'sseclienttransport' ||
+        sseHelperRe.test(v.toLowerCase())
+      ) {
+        tokens.push({ kind: 'name', value: v, line: ln, col: m.index + 1 });
+      }
     }
 
     capKeyRe.lastIndex = 0;
     while ((m = capKeyRe.exec(line)) !== null) {
       tokens.push({ kind: 'key', value: m[1], line: ln, col: m.index + 1 });
+    }
+
+    sseModuleRe.lastIndex = 0;
+    while ((m = sseModuleRe.exec(line)) !== null) {
+      tokens.push({ kind: 'string', value: m[0], line: ln, col: m.index + 1 });
+    }
+
+    sseTransportValRe.lastIndex = 0;
+    while ((m = sseTransportValRe.exec(line)) !== null) {
+      tokens.push({ kind: 'key', value: 'transport', line: ln, col: m.index + 1, transportSse: true });
+    }
+
+    sseEndpointValRe.lastIndex = 0;
+    while ((m = sseEndpointValRe.exec(line)) !== null) {
+      tokens.push({ kind: 'key', value: 'event', line: ln, col: m.index + 1, sseEndpointEvent: true });
     }
   }
 

@@ -1,6 +1,6 @@
 {
   "name": "@booyaka/mcp-vet",
-  "version": "0.10.3",
+  "version": "0.10.4",
   "description": "Scan MCP server source code for patterns that break under the final 2026-07-28 Model Context Protocol specification.",
   "type": "commonjs",
   "main": "dist/index.js",
@@ -52,7 +52,9 @@
     "ast",
     "cli",
     "typescript",
-    "python"
+    "python",
+    "sse",
+    "streamable-http"
   ],
   "license": "MIT",
   "scripts": {
