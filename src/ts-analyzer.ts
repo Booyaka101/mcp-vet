@@ -385,11 +385,16 @@ export function analyzeTs(absPath: string, text: string): Token[] {
     }
 
     // Object literal keys (roots:, "sampling":, logging shorthand, ...)
-    const emitKey = (nameNode: Node, value: string, benign = false) => {
+    const emitKey = (nameNode: Node, value: string, benign = false, literalValue?: string) => {
       const { line, col } = posOf(nameNode);
       const tok: Token = { kind: 'key', value, line, col };
       if (CAP.has(value)) tok.inCapabilities = isInCapabilities(nameNode);
       if (benign) tok.benign = true;
+      // `transport: 'sse'` / `{ event: 'endpoint' }` — the literal forms of the
+      // deprecated HTTP+SSE transport (SEP-2596). A value held in a variable is
+      // never marked (a documented miss — adversarial/missed/dynamic-transport.ts).
+      if (literalValue === 'sse' && /transport/i.test(value)) tok.transportSse = true;
+      if (literalValue === 'endpoint' && value === 'event') tok.sseEndpointEvent = true;
       // `sessionId` passed into a client transport constructor/factory = the
       // client resuming/owning a session.
       if (value === 'sessionId' && isClientTransportContext(nameNode)) {
@@ -412,7 +417,20 @@ export function analyzeTs(absPath: string, text: string): Token[] {
           const init = pa.getInitializer()?.getText();
           benign = init === 'undefined' || init === 'null';
         }
-        emitKey(pa.getNameNode(), name, benign);
+        let literalValue: string | undefined;
+        const init = pa.getInitializer();
+        if (
+          init &&
+          (init.getKind() === SyntaxKind.StringLiteral ||
+            init.getKind() === SyntaxKind.NoSubstitutionTemplateLiteral)
+        ) {
+          try {
+            literalValue = (init as any).getLiteralValue();
+          } catch {
+            /* leave undefined */
+          }
+        }
+        emitKey(pa.getNameNode(), name, benign, literalValue);
       } catch {
         /* computed / unusual key */
       }

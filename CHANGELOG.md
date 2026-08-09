@@ -4,6 +4,59 @@ All notable changes to `mcp-vet` are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.4]
+
+Closes the last uncovered row of the deprecated-features registry. Five of its
+six rows already had rules; the sixth — the HTTP+SSE transport, reclassified as
+Deprecated by SEP-2596 — did not. One new static rule and one new probe check,
+nothing else touched.
+
+### Added
+
+- **`SSE_TRANSPORT_DEPRECATED`** (DEPRECATED tier, exit 0) in both analyzers
+  and the regex fallback. Ungated, high confidence: the SDK transport classes
+  (`SSEServerTransport` / `SSEClientTransport` / Python's `SseServerTransport`
+  — the normalized names are unique to the MCP SDKs) and the SDK module paths
+  (`@modelcontextprotocol/sdk/server/sse`, `…/client/sse`,
+  `@modelcontextprotocol/server-legacy`, `mcp.server.sse`, `mcp.client.sse`),
+  flagged at the import line and every usage site, aliases included. Gated on
+  file-level MCP context: the python-sdk helper surface (`sse_client`,
+  `sse_app`, `connect_sse`, `handle_post_message`), a literal
+  `transport: 'sse'` / `transport="sse"` (high when the key is literally
+  `transport`), and the hand-rolled two-endpoint shape — a `text/event-stream`
+  content type **plus** an `event: endpoint` write, anchored at the
+  endpoint-event line. `text/event-stream` alone never fires: Streamable HTTP
+  frames POST responses as SSE, and flagging it would false-positive on every
+  correct server (locked by three new negatives).
+- **`legacy-sse-transport`** (WARN), the thirteenth check in the opt-in
+  `probe --spec 2026-07-28` suite. After the standard probe completes it issues
+  a fresh `GET` on the endpoint with `Accept: text/event-stream` and warns only
+  when a 2xx `text/event-stream` response actually delivers an
+  `event: endpoint` frame — the legacy transport's defining handshake. A
+  405/404/non-SSE/JSON answer is a clean note; an SSE stream that never names
+  an endpoint before `--timeout` is an inconclusive note, never a violation;
+  stdio targets skip. Gated behind `--spec` exactly like the other twelve
+  (test-locked), and the sniffed stream is aborted with its socket so the
+  event loop drains.
+
+### Why the removal date is quoted, not computed
+
+SEP-2596 is Final (the PR is merged and labeled `final`), but the registry's
+earliest-removal cell still reads *"Three months after SEP-2596 reaches
+Final"* — a relative clause, not a date. Every finding quotes that sentence
+verbatim; the day the registry prints a date, the finding will print that
+instead. Computing "Final + three months" ourselves would put words in the
+registry's mouth.
+
+### Benchmark
+
+Same pinned corpus: **258 findings, 256 true positives, 2 false positives
+(0.8%)** — 15 new `SSE_TRANSPORT_DEPRECATED` findings, every one hand-labeled
+a true positive (the typescript-sdk's own legacy SSE transport example and
+guide, and two python-sdk `sse_client` clients), and a byte-for-byte diff
+confirms zero drift in the other 21 rules. The two FPs are the pre-existing
+v0.9.0 pair. 105 tests (was 92).
+
 ## [0.10.3]
 
 Precision fixes from the first real-world hand-rolled OAuth clients. The 447-file

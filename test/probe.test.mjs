@@ -367,7 +367,7 @@ test('--spec runs the compliance suite IN ADDITION to the existing checks (migra
   assert.equal(res.findings.length, 0, JSON.stringify(res.findings, null, 2));
 });
 
-test('--spec: the passing/skip notes for all twelve checks are surfaced on a clean stateless server', async () => {
+test('--spec: the passing/skip notes for all thirteen checks are surfaced on a clean stateless server', async () => {
   const res = await runProbe([...SPEC, stateless]);
   assert.equal(res.status, 0, res.stderr);
   for (const note of [
@@ -384,6 +384,8 @@ test('--spec: the passing/skip notes for all twelve checks are surfaced on a cle
     'ping-still-answered: passed',
     // v0.10.0 — the auth-metadata checks are an HTTP concern, skipped on stdio
     'dcr-still-advertised / auth-metadata-missing-iss: skipped',
+    // v0.10.4 — the HTTP+SSE transport check is an HTTP concern too
+    'legacy-sse-transport: skipped',
   ]) {
     assert.ok(res.stdout.includes(note), `missing note "${note}":\n${res.stdout}`);
   }
@@ -454,6 +456,97 @@ test('the auth-metadata checks are GATED behind --spec; a server with NO metadat
     );
   } finally {
     bare.kill();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// v0.10.4 — legacy-sse-transport (SEP-2596): the deprecated two-endpoint
+// HTTP+SSE transport, sniffed with a fresh GET after the standard probe.
+// ---------------------------------------------------------------------------
+
+/** Start server-legacy-sse.mjs (optionally in a mode); resolve once listening. */
+function startLegacySseFixture(mode) {
+  return new Promise((resolve, reject) => {
+    const args = [join(fixtures, 'server-legacy-sse.mjs')];
+    if (mode) args.push(mode);
+    const child = spawn(process.execPath, args);
+    let out = '';
+    const timer = setTimeout(() => {
+      child.kill();
+      reject(new Error('legacy-sse fixture did not print PORT within 10 s'));
+    }, 10_000);
+    child.stdout.on('data', (d) => {
+      out += d;
+      const m = /PORT=(\d+)/.exec(out);
+      if (m) {
+        clearTimeout(timer);
+        resolve({ url: `http://127.0.0.1:${m[1]}`, kill: () => child.kill() });
+      }
+    });
+    child.on('exit', () => clearTimeout(timer));
+  });
+}
+
+test('--spec: a server still exposing the legacy GET+SSE endpoint WARNs (legacy-sse-transport, exit 0)', async () => {
+  const srv = await startLegacySseFixture();
+  try {
+    const res = await runProbeJson([...SPEC, srv.url]);
+    assert.equal(res.status, 0, `WARN-only must not fail the default gate\n${res.stderr}`);
+    const ids = res.findings.map((f) => f.patternId);
+    assert.deepEqual(ids, ['legacy-sse-transport'], JSON.stringify(res.findings, null, 2));
+    const f = res.findings[0];
+    assert.equal(f.severity, 'WARN');
+    assert.match(f.explanation, /SEP-2596/, 'explanation cites the deprecation SEP');
+    assert.match(f.explanation, /SEP-2575/, 'explanation cites the GET-endpoint removal');
+    assert.match(f.before, /event: endpoint/, 'evidence records the endpoint frame');
+    assert.ok(f.docUrl.endsWith('/deprecated'), `registry docUrl (got ${f.docUrl})`);
+  } finally {
+    srv.kill();
+  }
+});
+
+test('the existing Streamable HTTP fixture passes legacy-sse-transport cleanly (GET is not an SSE stream)', async () => {
+  const srv = await startHttpFixture('stateless');
+  try {
+    const res = await runProbe([...SPEC, srv.url]);
+    assert.equal(res.status, 0, res.stderr);
+    assert.ok(
+      res.stdout.includes('legacy-sse-transport: clean'),
+      `clean note surfaced:\n${res.stdout}`,
+    );
+    assert.ok(!res.stdout.includes('legacy-sse-transport: WARN'), 'no false WARN');
+  } finally {
+    srv.kill();
+  }
+});
+
+test('an SSE stream with NO endpoint event before the timeout is an inconclusive note, never a violation', async () => {
+  const srv = await startLegacySseFixture('no-endpoint');
+  try {
+    const res = await runProbeJson([...SPEC, srv.url]);
+    assert.equal(res.status, 0, res.stderr);
+    assert.ok(
+      !res.findings.some((f) => f.patternId === 'legacy-sse-transport'),
+      JSON.stringify(res.findings, null, 2),
+    );
+    const noted = await runProbe([...SPEC, srv.url]);
+    assert.ok(
+      noted.stdout.includes('legacy-sse-transport: inconclusive'),
+      `inconclusive note surfaced:\n${noted.stdout}`,
+    );
+  } finally {
+    srv.kill();
+  }
+});
+
+test('legacy-sse-transport is GATED behind --spec (plain --spec-version 2026-07-28 never runs it)', async () => {
+  const srv = await startLegacySseFixture();
+  try {
+    const res = await runProbeJson(['--spec-version', '2026-07-28', '--timeout', '1200', srv.url]);
+    assert.equal(res.status, 0, res.stderr);
+    assert.equal(res.findings.length, 0, JSON.stringify(res.findings, null, 2));
+  } finally {
+    srv.kill();
   }
 });
 

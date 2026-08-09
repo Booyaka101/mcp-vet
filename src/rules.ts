@@ -283,6 +283,21 @@ export const RULES: Record<PatternId, RuleMeta> = {
     ].join('\n'),
     docUrl: SEP_2352_URL,
   },
+  // --- 0.10.4: the sixth (and last uncovered) row of the deprecated-features
+  // registry — the HTTP+SSE transport, reclassified as Deprecated by SEP-2596.
+  SSE_TRANSPORT_DEPRECATED: {
+    id: 'SSE_TRANSPORT_DEPRECATED',
+    label: 'deprecated HTTP+SSE transport',
+    severity: 'DEPRECATED',
+    explanation:
+      'The HTTP+SSE transport is Deprecated (SEP-2596): "Reclassify the HTTP+SSE transport (deprecated since protocol version `2025-03-26`) as Deprecated under the feature lifecycle policy." Registry earliest removal: "Three months after SEP-2596 reaches Final". Migrate to Streamable HTTP: one endpoint, POST with an optional SSE response body.',
+    after: [
+      '// HTTP+SSE transport is Deprecated (earliest removal: three months after SEP-2596 reaches Final).',
+      '// Migrate to Streamable HTTP: replace SSEServerTransport with StreamableHTTPServerTransport',
+      '// and collapse the GET /sse + POST /messages pair into a single POST endpoint.',
+    ].join('\n'),
+    docUrl: DEPRECATED_REGISTRY_URL,
+  },
 };
 
 export interface RuntimeRuleMeta {
@@ -469,6 +484,19 @@ export const RUNTIME_RULES: Record<RuntimeRuleId, RuntimeRuleMeta> = {
       'Include the iss parameter in authorization responses (RFC 9207) and advertise "authorization_response_iss_parameter_supported": true in the authorization server metadata.',
     docUrl: SEP_2468_URL,
   },
+
+  // --- added in 0.10.4 — the deprecated HTTP+SSE transport (SEP-2596) ---
+
+  'legacy-sse-transport': {
+    id: 'legacy-sse-transport',
+    label: 'serves the deprecated HTTP+SSE transport',
+    severity: 'WARN',
+    explanation:
+      'target serves the legacy two-endpoint HTTP+SSE transport (GET returned an SSE stream whose first event is `endpoint`); 2026-07-28 removes the HTTP GET endpoint (SEP-2575) and HTTP+SSE is Deprecated in the registry (SEP-2596)',
+    after:
+      'Migrate to Streamable HTTP: one endpoint, POST with an optional SSE response body — replace SSEServerTransport with StreamableHTTPServerTransport and collapse the GET /sse + POST /messages pair into a single POST endpoint.',
+    docUrl: DEPRECATED_REGISTRY_URL,
+  },
 };
 
 const CAP_RE = /capabilities/i;
@@ -538,6 +566,26 @@ const INCLUDE_CONTEXT_RE = /includeContext|include_context/;
 // actually MCP-related — a plain SSE client reading Last-Event-ID, or a /ping
 // health route, must stay clean.
 const MCP_CONTEXT_RE = /\bmcp\b|mcp[-_]|modelcontextprotocol|model context protocol/i;
+
+// HTTP+SSE transport surfaces (SSE_TRANSPORT_DEPRECATED, SEP-2596). The class
+// names normalize (lowercase, -/_ stripped) to values unique to the MCP SDKs —
+// TS `SSEServerTransport`/`SSEClientTransport` and Python `SseServerTransport`
+// all land on the same two strings — so they and the SDK module paths are
+// ungated. The generic helper names (python-sdk's sse module surface) are gated
+// on MCP file context like the other SSE rule.
+const SSE_TRANSPORT_CLASSES = new Set(['sseservertransport', 'sseclienttransport']);
+const SSE_TRANSPORT_MODULE_PATHS = [
+  '@modelcontextprotocol/sdk/server/sse',
+  '@modelcontextprotocol/sdk/client/sse',
+  '@modelcontextprotocol/server-legacy',
+  'mcp.server.sse',
+  'mcp.client.sse',
+];
+const SSE_TRANSPORT_HELPERS = new Set(['sse_client', 'sse_app', 'connect_sse', 'handle_post_message']);
+// The endpoint-event write inside a single string literal, e.g.
+// res.write('event: endpoint\ndata: /messages?...'). The field/kwarg form
+// ({"event": "endpoint"}) is marked by the analyzers as t.sseEndpointEvent.
+const SSE_ENDPOINT_EVENT_RE = /event:\s*endpoint/;
 
 // Any token that shows the file is iss-aware: the `iss` parameter itself, an
 // `issuer` field, or a variable like recordedIssuer/expectedIssuer. Reading OR
@@ -693,6 +741,11 @@ export function applyRules(
   const dcrBodyTokens: Token[] = [];
   let sawClientName = false;
   let sawApplicationType = false;
+  // File-level signals for the hand-rolled two-endpoint HTTP+SSE shape (8l).
+  // `text/event-stream` ALONE must never fire — Streamable HTTP frames POST
+  // responses as SSE, so every correct server contains that string.
+  let sawTextEventStream = false;
+  const sseEndpointTokens: Token[] = [];
 
   const push = (id: PatternId, t: Token, confidence: Confidence) => {
     if (!enabled.has(id)) return;
@@ -849,6 +902,35 @@ export function applyRules(
       push('AUTH_CREDENTIALS_NOT_ISSUER_KEYED', t, 'medium');
     }
 
+    // Rule 8l — the deprecated HTTP+SSE transport (SEP-2596). HIGH ungated:
+    // the SDK transport classes (unique normalized symbols) and the SDK sse
+    // module paths — these name MCP explicitly. MEDIUM, gated on MCP file
+    // context: the python-sdk sse helper surface, and a transport key/kwarg
+    // whose value is the literal 'sse' (HIGH when the key is literally
+    // `transport`). The hand-rolled two-endpoint shape is a file-level
+    // post-pass below.
+    {
+      const norm = lower.replace(/[-_]/g, '');
+      if ((t.kind === 'name' || t.kind === 'string') && SSE_TRANSPORT_CLASSES.has(norm)) {
+        push('SSE_TRANSPORT_DEPRECATED', t, 'high');
+      } else if (
+        (t.kind === 'name' || t.kind === 'string') &&
+        SSE_TRANSPORT_MODULE_PATHS.some((p) => lower.includes(p))
+      ) {
+        push('SSE_TRANSPORT_DEPRECATED', t, 'high');
+      }
+      if (mcpContext && t.kind === 'name' && SSE_TRANSPORT_HELPERS.has(lower)) {
+        push('SSE_TRANSPORT_DEPRECATED', t, 'medium');
+      }
+      if (mcpContext && t.transportSse) {
+        push('SSE_TRANSPORT_DEPRECATED', t, lower === 'transport' ? 'high' : 'medium');
+      }
+      if (t.kind === 'string' && lower.includes('text/event-stream')) sawTextEventStream = true;
+      if ((t.kind === 'string' && SSE_ENDPOINT_EVENT_RE.test(v)) || t.sseEndpointEvent) {
+        sseEndpointTokens.push(t);
+      }
+    }
+
     // Rule 9 — SDK schema-constant identifiers used to register handlers
     if (t.kind === 'name' && SCHEMA_CONSTANTS[v]) {
       push(SCHEMA_CONSTANTS[v], t, 'high');
@@ -920,6 +1002,15 @@ export function applyRules(
   const dcrBodyToken = anchorNearest(dcrBodyTokens, registrationLines);
   if (mcpContext && !serverAuthContext && dcrBodyToken && sawClientName && !sawApplicationType) {
     push('AUTH_DCR_NO_APPLICATION_TYPE', dcrBodyToken, 'medium');
+  }
+
+  // Rule 8l post-pass — the hand-rolled two-endpoint HTTP+SSE shape (SEP-2596).
+  // The file must contain BOTH a `text/event-stream` content-type string AND an
+  // SSE endpoint-event write; the finding anchors at the endpoint-event line.
+  // `text/event-stream` alone never fires (Streamable HTTP frames POST
+  // responses as SSE), and the whole shape is gated on MCP file context.
+  if (mcpContext && sawTextEventStream && sseEndpointTokens.length > 0) {
+    push('SSE_TRANSPORT_DEPRECATED', sseEndpointTokens[0], 'medium');
   }
 
   return findings.sort(

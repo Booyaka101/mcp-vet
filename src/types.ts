@@ -33,7 +33,8 @@ export type PatternId =
   | 'OAUTH_DCR'
   | 'AUTH_ISS_UNVALIDATED'
   | 'AUTH_DCR_NO_APPLICATION_TYPE'
-  | 'AUTH_CREDENTIALS_NOT_ISSUER_KEYED';
+  | 'AUTH_CREDENTIALS_NOT_ISSUER_KEYED'
+  | 'SSE_TRANSPORT_DEPRECATED';
 
 export const ALL_PATTERN_IDS: PatternId[] = [
   'MCP_SESSION_ID',
@@ -57,6 +58,7 @@ export const ALL_PATTERN_IDS: PatternId[] = [
   'AUTH_ISS_UNVALIDATED',
   'AUTH_DCR_NO_APPLICATION_TYPE',
   'AUTH_CREDENTIALS_NOT_ISSUER_KEYED',
+  'SSE_TRANSPORT_DEPRECATED',
 ];
 
 /**
@@ -84,7 +86,9 @@ export type RuntimeRuleId =
   | 'ping-still-answered'
   // added in 0.10.0 — authorization-server metadata checks (auth hardening)
   | 'dcr-still-advertised'
-  | 'auth-metadata-missing-iss';
+  | 'auth-metadata-missing-iss'
+  // added in 0.10.4 — the deprecated HTTP+SSE transport (SEP-2596)
+  | 'legacy-sse-transport';
 
 export const ALL_RUNTIME_RULE_IDS: RuntimeRuleId[] = [
   'json-schema-dialect',
@@ -103,6 +107,7 @@ export const ALL_RUNTIME_RULE_IDS: RuntimeRuleId[] = [
   'ping-still-answered',
   'dcr-still-advertised',
   'auth-metadata-missing-iss',
+  'legacy-sse-transport',
 ];
 
 /** Any violation id — static pattern or runtime probe category. */
@@ -167,6 +172,20 @@ export interface Token {
    * iss/issuer is never marked.
    */
   credKey?: boolean;
+  /**
+   * True when this token is a `transport`-named key/kwarg whose value is the
+   * literal string 'sse' (FastMCP `mcp.run(transport="sse")`,
+   * `{ transport: 'sse' }`). Guards SSE_TRANSPORT_DEPRECATED; a transport name
+   * held in a variable is never marked (a documented miss).
+   */
+  transportSse?: boolean;
+  /**
+   * True when this token is an `event`-named field/kwarg whose value is the
+   * literal string 'endpoint' — the legacy HTTP+SSE transport's endpoint-event
+   * write (e.g. Python `{"event": "endpoint", ...}`). One half of the
+   * hand-rolled two-endpoint signal for SSE_TRANSPORT_DEPRECATED.
+   */
+  sseEndpointEvent?: boolean;
 }
 
 export interface Finding {
