@@ -1,0 +1,11 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Model Context Protocol specification
+    url: https://modelcontextprotocol.io/specification
+    about: What the protocol requires. Disagreements about a rule belong upstream first.
+  - name: MCP specification issues
+    url: https://github.com/modelcontextprotocol/modelcontextprotocol/issues
+    about: If a check enforces something the spec does not actually say, link the spec issue here.
+  - name: Security issue
+    url: https://github.com/Booyaka101/mcp-vet/security/advisories/new
+    about: Please report vulnerabilities privately, not as a public issue.
