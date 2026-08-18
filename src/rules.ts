@@ -1,4 +1,4 @@
-import { Token, Finding, PatternId, RuntimeRuleId, Severity, Confidence } from './types';
+import { Token, Finding, PatternId, RuntimeRuleId, PluginRuleId, Severity, Confidence } from './types';
 import {
   SPEC_URL,
   SEP_2106_URL,
@@ -7,6 +7,9 @@ import {
   SEP_2468_URL,
   SEP_837_URL,
   SEP_2352_URL,
+  AGENT_PLUGINS_SPEC_URL,
+  AGENT_PLUGINS_PLUGIN_SCHEMA_URL,
+  AGENT_PLUGINS_MCP_SCHEMA_URL,
 } from './constants';
 
 interface RuleMeta {
@@ -496,6 +499,112 @@ export const RUNTIME_RULES: Record<RuntimeRuleId, RuntimeRuleMeta> = {
     after:
       'Migrate to Streamable HTTP: one endpoint, POST with an optional SSE response body — replace SSEServerTransport with StreamableHTTPServerTransport and collapse the GET /sse + POST /messages pair into a single POST endpoint.',
     docUrl: DEPRECATED_REGISTRY_URL,
+  },
+};
+
+export interface PluginRuleMeta {
+  id: PluginRuleId;
+  label: string;
+  severity: Severity;
+  explanation: string;
+  /** the corrected Agent Plugins 1.0.0 form, rendered as the finding's `after` */
+  after: string;
+  docUrl: string;
+}
+
+/**
+ * Agent Plugins 1.0 package rules (`mcp-vet plugin <dir>`, added in 0.11.0).
+ * These vet the plugin envelope — plugin.json, mcp.json, and the skills/
+ * layout — against the vendored 1.0.0 schemas and the spec's semantic
+ * requirements (schemas/agent-plugins/1.0.0/, fetched 2026-08-18). Findings
+ * carry the same shape and exit-code contract as the static scan: BREAKING
+ * exits 1, DEPRECATED exits 0.
+ */
+export const PLUGIN_RULES: Record<PluginRuleId, PluginRuleMeta> = {
+  PLUGIN_MANIFEST_INVALID: {
+    id: 'PLUGIN_MANIFEST_INVALID',
+    label: 'plugin.json fails the 1.0.0 manifest schema',
+    severity: 'BREAKING',
+    explanation:
+      'plugin.json does not validate against the Agent Plugins 1.0.0 manifest schema. The root object is closed ("additionalProperties": false) and requires $schema and name; name is 1-64 chars of lowercase alphanumerics, hyphens and periods with no "--" or "..". Conformant clients reject the plugin (or, for an unknown top-level field, report and ignore it) — either way it does not load as authored.',
+    after: [
+      '{',
+      '  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",',
+      '  "name": "my-plugin"',
+      '}',
+      '// client-specific data belongs under "extensions": { "com.example.client": { ... } }',
+    ].join('\n'),
+    docUrl: AGENT_PLUGINS_PLUGIN_SCHEMA_URL,
+  },
+  PLUGIN_MCP_INVALID: {
+    id: 'PLUGIN_MCP_INVALID',
+    label: 'mcp.json fails the 1.0.0 MCP configuration schema',
+    severity: 'BREAKING',
+    explanation:
+      'mcp.json does not validate against the Agent Plugins 1.0.0 MCP configuration schema: the root requires exactly $schema and mcpServers, and every server entry must match exactly one closed transport variant (stdio, streamable-http, or sse). An unknown field, an unknown type value, or a field belonging to another variant makes the server entry invalid, and conformant clients will not start it.',
+    after: [
+      '{',
+      '  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",',
+      '  "mcpServers": {',
+      '    "example": { "type": "stdio", "command": "npx", "args": ["-y", "@example/mcp-server"] }',
+      '  }',
+      '}',
+    ].join('\n'),
+    docUrl: AGENT_PLUGINS_MCP_SCHEMA_URL,
+  },
+  PLUGIN_CMD_NOT_SINGLE_TOKEN: {
+    id: 'PLUGIN_CMD_NOT_SINGLE_TOKEN',
+    label: 'stdio command is not a single executable token',
+    severity: 'BREAKING',
+    explanation:
+      'The Agent Plugins spec: "The command field MUST contain a single executable token, not a shell command string. It MUST be either a bare executable name or a plugin-relative path beginning with ./". Clients do not shell-split this value — a command like "node server.js" is looked up verbatim as an executable named "node server.js" and fails to launch.',
+    after: '"command": "node", "args": ["${PLUGIN_ROOT}/server.js"]  // or bundle it: "command": "./server.js"',
+    docUrl: AGENT_PLUGINS_SPEC_URL,
+  },
+  PLUGIN_CWD_ESCAPE: {
+    id: 'PLUGIN_CWD_ESCAPE',
+    label: 'stdio cwd escapes the allowed roots',
+    severity: 'BREAKING',
+    explanation:
+      'The Agent Plugins spec allows exactly three cwd forms: a plugin-relative path beginning with ./, exactly ${PLUGIN_ROOT} or a path beginning with ${PLUGIN_ROOT}/, or exactly ${PLUGIN_DATA} or a path beginning with ${PLUGIN_DATA}/ — and the resolved path must stay inside that root. A cwd outside these forms fails containment, and conformant clients treat the server entry as invalid (spec §7.2.2).',
+    after: '"cwd": "./"  // or "./sub/dir", "${PLUGIN_ROOT}", "${PLUGIN_ROOT}/sub", "${PLUGIN_DATA}", "${PLUGIN_DATA}/sub"',
+    docUrl: AGENT_PLUGINS_SPEC_URL,
+  },
+  PLUGIN_ENV_RESERVED: {
+    id: 'PLUGIN_ENV_RESERVED',
+    label: 'env sets a reserved PLUGIN_ROOT / PLUGIN_DATA variable',
+    severity: 'BREAKING',
+    explanation:
+      'The Agent Plugins spec: "An MCP server\'s env object MUST NOT contain entries named PLUGIN_ROOT or PLUGIN_DATA. Such an entry makes that server configuration invalid." Clients supply both reserved variables themselves after applying configured overlays, so a plugin-set value is rejected, not honored.',
+    after: '// remove the entry — the client provides PLUGIN_ROOT and PLUGIN_DATA itself;\n// reference them as ${PLUGIN_ROOT}/... or ${PLUGIN_DATA}/... in args, env values, and cwd.',
+    docUrl: AGENT_PLUGINS_SPEC_URL,
+  },
+  PLUGIN_REMOTE_INSECURE_URL: {
+    id: 'PLUGIN_REMOTE_INSECURE_URL',
+    label: 'remote server url violates the spec URL rules',
+    severity: 'BREAKING',
+    explanation:
+      'The Agent Plugins spec: "The url value MUST be an absolute HTTP or HTTPS URL and MUST NOT contain user information or a fragment. Non-loopback endpoints MUST use HTTPS." HTTP is allowed only when the host is exactly localhost or an IP literal in a loopback range (127.0.0.0/8, ::1). Conformant clients refuse to connect to a URL that breaks these rules.',
+    after: '"url": "https://example.com/mcp"  // http:// only for localhost / 127.0.0.0/8 / [::1]; never user:pass@ or #fragment',
+    docUrl: AGENT_PLUGINS_SPEC_URL,
+  },
+  PLUGIN_SSE_TRANSPORT: {
+    id: 'PLUGIN_SSE_TRANSPORT',
+    label: 'declares the deprecated HTTP+SSE transport',
+    severity: 'DEPRECATED',
+    explanation:
+      'This mcp.json entry declares type "sse" — the legacy HTTP+SSE transport. The Agent Plugins 1.0.0 schema still accepts it, but the MCP 2026-07-28 spec reclassifies HTTP+SSE as Deprecated under the feature lifecycle policy (SEP-2596, the same change mcp-vet\'s SSE_TRANSPORT_DEPRECATED source rule covers) and removes SSE stream resumability (SSE_RESUMABILITY_REMOVED). The plugin format is one protocol revision behind the protocol it packages.',
+    after: '"type": "streamable-http"  // same url field; migrate the server off HTTP+SSE (see SSE_TRANSPORT_DEPRECATED)',
+    docUrl: CHANGELOG_URL,
+  },
+  PLUGIN_SKILL_LAYOUT: {
+    id: 'PLUGIN_SKILL_LAYOUT',
+    label: 'SKILL.md outside the discoverable skills layout',
+    severity: 'DEPRECATED',
+    explanation:
+      'The Agent Plugins spec: "Each immediate child directory containing a path named exactly SKILL.md that resolves to a regular file is treated as one skill. Clients MUST NOT recursively search deeper descendants for additional skills." This SKILL.md is not at skills/<name>/SKILL.md, so every conformant client silently ignores it.',
+    after: 'skills/\n└── my-skill/\n    └── SKILL.md   // exactly one level below skills/',
+    docUrl: AGENT_PLUGINS_SPEC_URL,
   },
 };
 

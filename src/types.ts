@@ -110,8 +110,35 @@ export const ALL_RUNTIME_RULE_IDS: RuntimeRuleId[] = [
   'legacy-sse-transport',
 ];
 
-/** Any violation id — static pattern or runtime probe category. */
-export type ViolationId = PatternId | RuntimeRuleId;
+/**
+ * Violations in an Agent Plugins 1.0 package (`mcp-vet plugin <dir>`) — the
+ * plugin envelope (plugin.json / mcp.json / skills layout) rather than MCP
+ * server source. Bundled server source found inside a plugin is scanned with
+ * the ordinary PatternId rules, not these.
+ */
+export type PluginRuleId =
+  | 'PLUGIN_MANIFEST_INVALID'
+  | 'PLUGIN_MCP_INVALID'
+  | 'PLUGIN_CMD_NOT_SINGLE_TOKEN'
+  | 'PLUGIN_CWD_ESCAPE'
+  | 'PLUGIN_ENV_RESERVED'
+  | 'PLUGIN_REMOTE_INSECURE_URL'
+  | 'PLUGIN_SSE_TRANSPORT'
+  | 'PLUGIN_SKILL_LAYOUT';
+
+export const ALL_PLUGIN_RULE_IDS: PluginRuleId[] = [
+  'PLUGIN_MANIFEST_INVALID',
+  'PLUGIN_MCP_INVALID',
+  'PLUGIN_CMD_NOT_SINGLE_TOKEN',
+  'PLUGIN_CWD_ESCAPE',
+  'PLUGIN_ENV_RESERVED',
+  'PLUGIN_REMOTE_INSECURE_URL',
+  'PLUGIN_SSE_TRANSPORT',
+  'PLUGIN_SKILL_LAYOUT',
+];
+
+/** Any violation id — static pattern, runtime probe category, or plugin rule. */
+export type ViolationId = PatternId | RuntimeRuleId | PluginRuleId;
 
 /**
  * A normalized syntactic token emitted by a language analyzer. Every analyzer

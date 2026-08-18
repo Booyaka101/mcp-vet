@@ -1,7 +1,7 @@
 {
   "name": "@booyaka/mcp-vet",
-  "version": "0.10.4",
-  "description": "Scan MCP server source code for patterns that break under the final 2026-07-28 Model Context Protocol specification.",
+  "version": "0.11.0",
+  "description": "Scan MCP server source code and Agent Plugins 1.0 packages for patterns that break under the final 2026-07-28 Model Context Protocol specification.",
   "type": "commonjs",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -19,6 +19,7 @@
   "files": [
     "dist",
     "schema",
+    "schemas",
     "README.md",
     "CHANGELOG.md",
     "BENCHMARK.md",
@@ -54,13 +55,16 @@
     "typescript",
     "python",
     "sse",
-    "streamable-http"
+    "streamable-http",
+    "agent-plugins",
+    "copilot",
+    "plugin"
   ],
   "license": "MIT",
   "scripts": {
     "build": "tsc -p tsconfig.json && node scripts/copy-assets.mjs",
     "prepare": "npm run build",
-    "test": "npm run build && node --test test/scan.test.mjs test/probe.test.mjs"
+    "test": "npm run build && node --test test/scan.test.mjs test/probe.test.mjs test/plugin.test.mjs"
   },
   "dependencies": {
     "commander": "^15.0.0",

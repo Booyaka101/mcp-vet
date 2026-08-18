@@ -1,0 +1,6 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "loopback-plugin",
+  "version": "1.0.0",
+  "description": "Plain HTTP to loopback hosts is allowed."
+}

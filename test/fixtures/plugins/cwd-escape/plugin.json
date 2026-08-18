@@ -1,0 +1,6 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "cwd-escape-plugin",
+  "version": "1.0.0",
+  "description": "stdio cwd points outside the allowed roots."
+}

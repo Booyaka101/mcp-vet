@@ -5,7 +5,7 @@
 [![node](https://img.shields.io/node/v/@booyaka/mcp-vet.svg)](https://nodejs.org)
 [![license: MIT](https://img.shields.io/npm/l/@booyaka/mcp-vet.svg)](./LICENSE)
 
-**On July 28, 2026 the Model Context Protocol ships its `2026-07-28` specification as final** — and it removes several things that today's MCP servers rely on. `mcp-vet` is a zero-config CLI that scans your MCP server source (TypeScript, JavaScript, and Python) for the exact patterns that will break client interop on that date, and tells you what to change.
+**On July 28, 2026 the Model Context Protocol ships its `2026-07-28` specification as final** — and it removes several things that today's MCP servers rely on. `mcp-vet` is a zero-config CLI that scans your MCP server source (TypeScript, JavaScript, and Python) for the exact patterns that will break client interop on that date, and tells you what to change. Since 0.11.0 it also vets [Agent Plugins 1.0 packages](#vet-an-agent-plugins-10-package-mcp-vet-plugin), the plugin format that went GA in VS Code and GitHub Copilot on 2026-08-12 and ships MCP servers via `mcp.json`.
 
 - Final Key Changes list: <https://modelcontextprotocol.io/specification/2026-07-28/changelog>
 - Deprecated-features registry: <https://modelcontextprotocol.io/specification/2026-07-28/deprecated>
@@ -422,6 +422,101 @@ Try it against the official reference server — the July 2026 `@modelcontextpro
 npx @booyaka/mcp-vet probe --spec-version 2026-07-28 npx -y @modelcontextprotocol/server-everything stdio
 ```
 
+## Vet an Agent Plugins 1.0 package (`mcp-vet plugin`)
+
+Agent Plugins 1.0 went GA on 2026-08-12 in VS Code, Copilot CLI, the GitHub
+Copilot SDK, and the Copilot app, installed by default from the Awesome Copilot
+marketplace. A plugin is a directory with a `plugin.json` manifest, an optional
+`skills/` folder, and an optional `mcp.json` declaring MCP servers, which makes
+`mcp.json` a first-class distribution channel for MCP servers.
+
+The plugin format is one protocol revision behind the protocol it packages. The
+1.0.0 schema still accepts `type: "sse"`, which the MCP 2026-07-28 spec
+reclassifies as Deprecated (SEP-2596) and whose stream resumability it removes.
+
+```bash
+npx @booyaka/mcp-vet plugin ./my-plugin
+```
+
+vets the whole package in one pass:
+
+1. **Envelope.** `plugin.json` and `mcp.json` against the canonical 1.0.0
+   schemas, vendored under
+   [`schemas/agent-plugins/1.0.0/`](./schemas/agent-plugins/1.0.0/) (fetched
+   2026-08-18 from
+   [plugin.schema.json](https://agent-plugins.org/schemas/1.0.0/plugin.schema.json)
+   and
+   [mcp.schema.json](https://agent-plugins.org/schemas/1.0.0/mcp.schema.json);
+   the skill-layout prose is pinned verbatim in
+   [`skill-layout.md`](./schemas/agent-plugins/1.0.0/skill-layout.md)).
+   Validation is offline, which the spec requires: clients MUST NOT retrieve a
+   schema while loading a plugin.
+2. **Semantics the schema can't express.** Single-token stdio commands, cwd
+   containment (`./../x` passes the schema's prefix pattern but escapes the
+   root), reserved env names, and the URL security rules.
+3. **The protocol inside the envelope.** A stdio server whose `command` is a
+   `./`-relative path into the plugin gets its bundled TS/JS/Python source
+   scanned with the same 22 static rules as `mcp-vet <paths>`, reported
+   plugin-relative with `file:line:col`. Servers that can't be scanned are
+   never silently skipped: a bare launcher token (`npx`, `uvx`, `node`,
+   `python`) is reported as unscannable by design with the reason printed, and
+   remote entries point you at `mcp-vet probe <url>`.
+
+### The new rules
+
+| Rule | Tier | Fires when |
+| --- | --- | --- |
+| `PLUGIN_MANIFEST_INVALID` | 🔴 BREAKING | `plugin.json` fails the 1.0.0 manifest schema: absent manifest, missing `$schema`, an unknown top-level field (the root is closed; client data belongs under `extensions`), or a `name` breaking the 1–64-char lowercase pattern (no `--` or `..`) |
+| `PLUGIN_MCP_INVALID` | 🔴 BREAKING | `mcp.json` fails the 1.0.0 MCP schema. The root must be exactly `$schema` + `mcpServers`, and each server must match exactly one closed variant (`stdio`, `streamable-http`, `sse`). Unknown types, cross-variant fields, and containment failures land here |
+| `PLUGIN_CMD_NOT_SINGLE_TOKEN` | 🔴 BREAKING | a stdio `command` is not a single executable token, bare or beginning with `./`. Clients don't shell-split: `"node server.js"` is looked up as an executable literally named `node server.js` |
+| `PLUGIN_CWD_ESCAPE` | 🔴 BREAKING | `cwd` doesn't start with `./`, `${PLUGIN_ROOT}` or `${PLUGIN_DATA}`, or starts with `./` but resolves outside the plugin root |
+| `PLUGIN_ENV_RESERVED` | 🔴 BREAKING | `env` contains an entry named `PLUGIN_ROOT` or `PLUGIN_DATA`. The spec reserves both, and such an entry makes the server configuration invalid |
+| `PLUGIN_REMOTE_INSECURE_URL` | 🔴 BREAKING | a `streamable-http`/`sse` `url` is not an absolute HTTP(S) URL, carries user information or a fragment, or uses plain HTTP on a non-loopback host. Loopback means exactly `localhost`, `127.0.0.0/8`, or `[::1]`. The spec says *non-loopback*, not *non-localhost*, so `http://127.0.0.1:3000/mcp` and `http://[::1]:3000/mcp` are fine |
+| `PLUGIN_SSE_TRANSPORT` | 🟡 DEPRECATED | any server declares `type: "sse"`, the HTTP+SSE transport the MCP 2026-07-28 spec reclassifies as Deprecated (SEP-2596; the source-side counterpart is `SSE_TRANSPORT_DEPRECATED`) |
+| `PLUGIN_SKILL_LAYOUT` | 🟡 DEPRECATED | a `SKILL.md` sits anywhere other than `skills/<name>/SKILL.md`. Clients MUST NOT recurse deeper, so a nested skill isn't an error. It's silently invisible, which is worse |
+
+### Worked example
+
+Given a plugin whose `mcp.json` is:
+
+```json
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+  "mcpServers": {
+    "legacy": { "type": "sse", "url": "http://example.com/mcp" },
+    "local": { "type": "stdio", "command": "node server.js", "cwd": "../shared" }
+  }
+}
+```
+
+`mcp-vet plugin ./my-plugin` reports (fixture-locked in
+`test/fixtures/plugins/worked-example`):
+
+```text
+mcp.json:5:7   DEPRECATED  PLUGIN_SSE_TRANSPORT         legacy: type "sse" is the HTTP+SSE transport, Deprecated by MCP 2026-07-28 (SEP-2596)
+mcp.json:6:7   BREAKING    PLUGIN_REMOTE_INSECURE_URL   legacy: non-loopback host "example.com" over plain HTTP — non-loopback endpoints MUST use HTTPS
+mcp.json:10:7  BREAKING    PLUGIN_CMD_NOT_SINGLE_TOKEN  local: "node server.js" is 2 tokens — clients do not shell-split, so pass arguments via "args"
+mcp.json:11:7  BREAKING    PLUGIN_CWD_ESCAPE            local: "../shared" does not start with ./, ${PLUGIN_ROOT} or ${PLUGIN_DATA}
+
+4 finding(s): 3 BREAKING, 1 DEPRECATED   → exit 1
+```
+
+### Edge cases it gets right
+
+- A missing `mcp.json` is valid and silent (spec §6.2: an absent component
+  location MUST NOT be treated as an error), and `mcpServers` may legally be
+  empty.
+- A reverse-domain top-level directory such as `com.github.copilot/` is a
+  legal client-extension directory and is ignored, not flagged.
+- `plugin.json` with an unknown top-level field fails, because the root schema
+  is closed (`"additionalProperties": false`).
+- A plugin bundling a non-source executable (say a compiled binary) as its
+  server gets an explicit "can't audit this" note, not silence.
+
+`--json`, `--sarif`, `--fail-on`, and the exit-code contract are shared with
+the scan: any BREAKING finding exits 1, DEPRECATED-only exits 0, unusable
+input exits 2.
+
 ## Where mcp-vet fits (and where it doesn't)
 
 **The probe half is not novel, and this README won't pretend otherwise.** Other
@@ -433,6 +528,7 @@ cover ground the `--spec 2026-07-28` suite covers:
 | [`@modelcontextprotocol/conformance`](https://github.com/modelcontextprotocol/conformance) — `npx @modelcontextprotocol/conformance server --url <url>` | The **official** wire test suite. Its README notes that *"dated versions through 2025-11-25 use the stateful lifecycle (initialize handshake), while the 2026 draft (2026-07-28) uses the stateless lifecycle (per-request `_meta`)"* | The authority on wire conformance. If you can boot your server, **run it** — it is more complete at the protocol level than any third-party probe, mcp-vet's included |
 | [`mcp-spec-check`](https://www.npmjs.com/package/mcp-spec-check) (Roee-Tsur) | Zero-install black-box URL probe for 2026-07-28 readiness | Already ships cache-metadata, MRTR and resources-subscribe checks — genuinely prior art for three of mcp-vet's thirteen `--spec` checks |
 | [`mcpfit`](https://github.com/printemps-tokyo/mcpfit) (printemps-tokyo) | Go CLI auditing a running server against the stateless spec | Already ships a `cache-hints` check for `ttlMs`/`cacheScope` |
+| [`@hiai-gg/agent-plugins-doctor`](https://www.npmjs.com/package/@hiai-gg/agent-plugins-doctor) (0.0.6, 2026-08-08) | Agent Plugins envelope validator: plugin.json/mcp.json/SKILL.md against the 1.0.0 spec, secret/path-traversal auditing, a client compatibility matrix, 12 autofixes | Real overlap on the *envelope* (`PLUGIN_MANIFEST_INVALID`/`PLUGIN_MCP_INVALID` territory). It says nothing about MCP protocol revisions, the SSE deprecation, or the server source a plugin bundles. That protocol-inside-the-envelope audit is what `mcp-vet plugin` adds |
 
 **The uncontested claim is the other half: static source analysis.** mcp-vet
 reads your *source* — TypeScript/JavaScript via ts-morph, Python via a bundled
@@ -464,6 +560,7 @@ npx @booyaka/mcp-vet ./src ./packages  # multiple roots
 npx @booyaka/mcp-vet server.py         # a single file
 npx @booyaka/mcp-vet fixtures ./dir    # write runtime conformance fixtures + checklist (default: ./mcp-vet-fixtures)
 npx @booyaka/mcp-vet probe <url|cmd>   # vet a RUNNING server's wire behavior (see section above; alias: run)
+npx @booyaka/mcp-vet plugin <dir>      # vet an Agent Plugins 1.0 package (envelope + bundled server source)
 ```
 
 Globs `**/*.{ts,tsx,mts,cts,js,jsx,mjs,cjs}` and `**/*.py`, skipping `node_modules`, `.git`, `__pycache__`, `dist`, and `build`.

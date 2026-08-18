@@ -747,7 +747,7 @@ test('--only / enabled subset restricts rules', () => {
 test('ignore matcher skips matched paths', () => {
   const { findings } = scanTarget('.', { ignore: ['**/*.py'] });
   assert.ok(findings.length > 0);
-  assert.ok(findings.every((f) => f.file.endsWith('.ts')), 'no python findings');
+  assert.ok(findings.every((f) => !f.file.endsWith('.py')), 'no python findings');
 });
 
 // ---------------------------------------------------------------------------

@@ -1,0 +1,17 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+  "mcpServers": {
+    "v4": {
+      "type": "streamable-http",
+      "url": "http://127.0.0.1:3000/mcp"
+    },
+    "name": {
+      "type": "streamable-http",
+      "url": "http://localhost:3000/mcp"
+    },
+    "v6": {
+      "type": "streamable-http",
+      "url": "http://[::1]:3000/mcp"
+    }
+  }
+}

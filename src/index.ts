@@ -25,8 +25,11 @@ export type { FixResult } from './autofix';
 
 export { renderJson, renderMarkdown, renderSarif, toPublicFinding } from './reporters';
 
-export { RULES, RUNTIME_RULES } from './rules';
-export type { RuntimeRuleMeta } from './rules';
+export { RULES, RUNTIME_RULES, PLUGIN_RULES } from './rules';
+export type { RuntimeRuleMeta, PluginRuleMeta } from './rules';
+
+export { vetPlugin, PluginVetError } from './inputs/plugin';
+export type { PluginVetOptions, PluginVetResult, PluginServerInfo } from './inputs/plugin';
 export { CONFORMANCE_FIXTURES, emitConformanceFixtures } from './conformance';
 export type { ConformanceFixture, ConformanceStep, EmitResult } from './conformance';
 export { IgnoreMatcher } from './ignore';
@@ -37,6 +40,9 @@ export {
   DEPRECATED_REGISTRY_URL,
   SEP_2106_URL,
   JSON_SCHEMA_2020_12,
+  AGENT_PLUGINS_SPEC_URL,
+  AGENT_PLUGINS_PLUGIN_SCHEMA_URL,
+  AGENT_PLUGINS_MCP_SCHEMA_URL,
   MANUAL_REVIEW,
   getVersion,
 } from './constants';
@@ -46,11 +52,12 @@ export type { ProbeTarget, ProbeOptions, ProbeResult } from './probe';
 export { analyzeSchemaDialect } from './schema-dialect';
 export type { DialectIssue } from './schema-dialect';
 
-export { ALL_PATTERN_IDS, ALL_RUNTIME_RULE_IDS, SPEC_VERSIONS } from './types';
+export { ALL_PATTERN_IDS, ALL_RUNTIME_RULE_IDS, ALL_PLUGIN_RULE_IDS, SPEC_VERSIONS } from './types';
 export type {
   Finding,
   PatternId,
   RuntimeRuleId,
+  PluginRuleId,
   ViolationId,
   SpecVersion,
   Severity,

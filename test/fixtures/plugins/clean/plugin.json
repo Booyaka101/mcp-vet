@@ -1,0 +1,6 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "clean-plugin",
+  "version": "1.0.0",
+  "description": "A fully conformant Agent Plugins 1.0 package."
+}
