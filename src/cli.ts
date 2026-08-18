@@ -18,6 +18,7 @@ import {
 import { applyFixes } from './autofix';
 import { emitConformanceFixtures } from './conformance';
 import { runProbeCli } from './probe-cli';
+import { runPluginCli } from './plugin-cli';
 
 const CONF_VALUES: Confidence[] = ['high', 'medium', 'low'];
 const FAILON_VALUES: FailOn[] = ['breaking', 'any', 'none'];
@@ -76,6 +77,14 @@ if (process.argv[2] === 'fixtures') {
   } catch (err) {
     fail(`could not write fixtures: ${(err as Error).message}`);
   }
+}
+
+// `mcp-vet plugin [options] <dir>` — vet an Agent Plugins 1.0 package: the
+// plugin envelope against the vendored 1.0.0 schemas plus the 22 source rules
+// over any bundled server code. Dispatched before commander like `fixtures`;
+// a directory literally named "plugin" can still be scanned as `mcp-vet ./plugin`.
+if (process.argv[2] === 'plugin') {
+  process.exit(runPluginCli(process.argv.slice(3)));
 }
 
 // `mcp-vet probe [options] <url | command...>` — connect to a RUNNING server and
@@ -142,6 +151,10 @@ function scanMain(): void {
       [
         '',
         'Commands:',
+        '  plugin [options] <dir>         vet an Agent Plugins 1.0 package: plugin.json/mcp.json against the vendored',
+        '                                 1.0.0 schemas (offline), single-token stdio commands, cwd containment,',
+        '                                 reserved env names, remote URL security, the deprecated HTTP+SSE transport,',
+        '                                 skills discovery layout — plus the 22 source rules over bundled server code',
         '  fixtures [dir]                 write protocol-level conformance fixtures + CHECKLIST.md (default: ./mcp-vet-fixtures)',
         '  probe [options] <url|command>  connect to a RUNNING server and vet its wire behavior (alias: run)',
         '                                 (JSON Schema 2020-12 dialect; with --spec-version 2026-07-28, also stateless',

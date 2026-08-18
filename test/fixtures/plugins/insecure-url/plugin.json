@@ -1,0 +1,6 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "insecure-url-plugin",
+  "version": "1.0.0",
+  "description": "Non-loopback remote over plain HTTP."
+}

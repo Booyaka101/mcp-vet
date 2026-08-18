@@ -4,6 +4,63 @@ All notable changes to `mcp-vet` are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.0]
+
+Adds a second input surface: **Agent Plugins 1.0 packages** (`mcp-vet plugin
+<dir>`). Agent Plugins 1.0 went GA on 2026-08-12 in VS Code, Copilot CLI, the
+GitHub Copilot SDK, and the Copilot app, installed by default from the Awesome
+Copilot marketplace, which makes a plugin's `mcp.json` a first-class
+distribution channel for MCP servers. That format is one protocol revision
+behind the protocol it packages: the 1.0.0 schema still accepts `type: "sse"`,
+which the MCP 2026-07-28 spec reclassifies as Deprecated (SEP-2596) and whose
+stream resumability it removes. Envelope validators exist; nothing audited the
+protocol inside the envelope until now.
+
+### Added
+
+- **`mcp-vet plugin <dir>`** vets a plugin directory: `plugin.json` and
+  `mcp.json` against the canonical 1.0.0 schemas (vendored under
+  `schemas/agent-plugins/1.0.0/`, fetched 2026-08-18, so validation is offline
+  and reproducible), the spec's semantic rules the schemas can't express, and
+  the skills discovery layout. Shares the scan's reporters (`--json`,
+  `--sarif`, colored terminal) and exit-code contract: any BREAKING finding
+  exits 1, DEPRECATED-only exits 0, unusable input exits 2.
+- **Six BREAKING rules**: `PLUGIN_MANIFEST_INVALID` (closed-root manifest
+  schema failures: unknown top-level fields, bad names with `--`/`..`,
+  missing `$schema`), `PLUGIN_MCP_INVALID` (mcp.json root/variant schema
+  failures, unknown transport types, cross-variant fields, containment
+  failures), `PLUGIN_CMD_NOT_SINGLE_TOKEN` (a stdio `command` that is not a
+  single executable token, bare or `./`-relative; `"node server.js"` is two
+  tokens), `PLUGIN_CWD_ESCAPE` (`cwd` outside `./`, `${PLUGIN_ROOT}` or
+  `${PLUGIN_DATA}`, including `./../x` traversal that passes the schema's
+  prefix pattern but escapes the root), `PLUGIN_ENV_RESERVED` (`env` entries
+  named `PLUGIN_ROOT`/`PLUGIN_DATA`), and `PLUGIN_REMOTE_INSECURE_URL`
+  (a `streamable-http`/`sse` url that is not absolute HTTP(S), carries user
+  information or a fragment, or uses plain HTTP on a non-loopback host;
+  loopback means exactly `localhost`, `127.0.0.0/8`, or `[::1]`, per the
+  spec's "Non-loopback endpoints MUST use HTTPS").
+- **Two DEPRECATED rules**: `PLUGIN_SSE_TRANSPORT` (any `type: "sse"` entry;
+  the message names `SSE_TRANSPORT_DEPRECATED` and the 2026-07-28 spec) and
+  `PLUGIN_SKILL_LAYOUT` (a `SKILL.md` outside `skills/<name>/SKILL.md`;
+  clients MUST NOT recurse, so it is silently ignored, not an error).
+- **Depth**: a stdio server whose `command` is a `./`-relative path into the
+  plugin gets its bundled TS/JS/Python source scanned with the existing 22
+  static rules, verbatim, so a plugin shipping its own server gets a real
+  2026-07-28 protocol audit, reported plugin-relative with file:line:col.
+  Servers that cannot be scanned are never silently skipped: bare launcher
+  tokens (`npx`, `node`, `python`) are reported unscannable-by-design with
+  the reason printed, and remote entries point at `mcp-vet probe <url>`.
+- Programmatic API: `vetPlugin()`, `PLUGIN_RULES`, `ALL_PLUGIN_RULE_IDS`.
+- 16 plugin fixtures under `test/fixtures/plugins/` and 28 new tests
+  (exact rule ids, severities, and exit codes; 133 total).
+
+### Unchanged (verified)
+
+- The server-scanning path's output is byte-identical to 0.10.4 on the same
+  input (JSON output diffed over the full fixture tree), and all 105
+  pre-existing tests pass unmodified except one whole-tree assertion updated
+  to account for the new fixture files.
+
 ## [0.10.4]
 
 Closes the last uncovered row of the deprecated-features registry. Five of its

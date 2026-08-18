@@ -1,0 +1,6 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "bundled-server-plugin",
+  "version": "1.0.0",
+  "description": "Bundles its own MCP server source."
+}

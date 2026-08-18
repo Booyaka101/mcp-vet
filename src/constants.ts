@@ -24,6 +24,18 @@ export const SEP_2352_URL = 'https://github.com/modelcontextprotocol/modelcontex
 /** PR #2858 — DCR deprecated in favour of Client ID Metadata Documents (no SEP number). */
 export const PR_2858_URL = 'https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2858';
 export const JSON_SCHEMA_2020_12 = 'https://json-schema.org/draft/2020-12/schema';
+/**
+ * Agent Plugins 1.0 (GA in VS Code / Copilot CLI / the Copilot SDK and app on
+ * 2026-08-12). The two canonical machine-readable schemas are vendored under
+ * schemas/agent-plugins/1.0.0/ (fetched 2026-08-18) so `mcp-vet plugin`
+ * validates offline; the skill-layout rules are spec prose, pinned verbatim in
+ * schemas/agent-plugins/1.0.0/skill-layout.md.
+ */
+export const AGENT_PLUGINS_SPEC_URL = 'https://agent-plugins.org/specification';
+export const AGENT_PLUGINS_PLUGIN_SCHEMA_URL =
+  'https://agent-plugins.org/schemas/1.0.0/plugin.schema.json';
+export const AGENT_PLUGINS_MCP_SCHEMA_URL =
+  'https://agent-plugins.org/schemas/1.0.0/mcp.schema.json';
 
 /**
  * 2026-07-28 changes that are real but NOT reliably detectable by static token

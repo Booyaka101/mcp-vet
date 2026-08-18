@@ -1,10 +1,11 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { createColors } from './colors';
-import { Finding, Severity, ALL_PATTERN_IDS, RuntimeRuleId } from './types';
-import { RULES, RUNTIME_RULES } from './rules';
+import { Finding, Severity, ALL_PATTERN_IDS, RuntimeRuleId, PluginRuleId } from './types';
+import { RULES, RUNTIME_RULES, PLUGIN_RULES } from './rules';
 import { ScanResult } from './scanner';
 import type { ProbeResult } from './probe';
+import type { PluginVetResult } from './inputs/plugin';
 import { SPEC_URL, SPEC_DATE, MANUAL_REVIEW, getVersion } from './constants';
 
 function makeChalk(color: boolean | undefined) {
@@ -205,8 +206,8 @@ export function renderSarif(result: Pick<ScanResult, 'findings'>): string {
       properties: { severity: r.severity },
     };
   });
-  // Runtime-probe rules join the driver metadata only when they actually fired,
-  // so static-scan SARIF keeps its stable 9-rule shape.
+  // Runtime-probe and plugin rules join the driver metadata only when they
+  // actually fired, so static-scan SARIF keeps its stable rule shape.
   const runtimeUsed = [
     ...new Set(
       result.findings
@@ -216,6 +217,25 @@ export function renderSarif(result: Pick<ScanResult, 'findings'>): string {
   ];
   for (const id of runtimeUsed) {
     const r = RUNTIME_RULES[id];
+    rules.push({
+      id,
+      name: r.label.replace(/[^A-Za-z0-9]+/g, ''),
+      shortDescription: { text: r.label },
+      fullDescription: { text: r.explanation },
+      helpUri: r.docUrl,
+      defaultConfiguration: { level: sarifLevel(r.severity) },
+      properties: { severity: r.severity },
+    });
+  }
+  const pluginUsed = [
+    ...new Set(
+      result.findings
+        .map((f) => f.patternId)
+        .filter((id): id is PluginRuleId => id in PLUGIN_RULES),
+    ),
+  ];
+  for (const id of pluginUsed) {
+    const r = PLUGIN_RULES[id];
     rules.push({
       id,
       name: r.label.replace(/[^A-Za-z0-9]+/g, ''),
@@ -322,6 +342,58 @@ export function reportProbeTerminal(result: ProbeResult, opts: TerminalOptions =
   const summary = `${findings.length} violation(s): ${errors} ERROR, ${warns} WARN`;
   console.log(errors > 0 ? c.red.bold(summary) : c.yellow.bold(summary));
   console.log(c.gray(`See ${SPEC_URL}`));
+}
+
+/** (g) Terminal report for `mcp-vet plugin` — Agent Plugins 1.0 package findings. */
+export function reportPluginTerminal(result: PluginVetResult, opts: TerminalOptions = {}): void {
+  const c = makeChalk(opts.color);
+  const { findings } = result;
+
+  const scannedNote =
+    result.sourceFilesScanned > 0
+      ? ` · ${result.sourceFilesScanned} bundled source file(s) scanned`
+      : '';
+  console.log(
+    c.bold('mcp-vet plugin') +
+      c.gray(
+        ` — ${result.pluginDir} · ${result.pluginName ?? '(unnamed)'} · ${result.servers.length} MCP server(s) · ${result.skillCount} skill(s)${scannedNote}`,
+      ),
+  );
+  for (const n of result.notes) console.log(c.gray(`  note: ${n}`));
+
+  if (findings.length === 0) {
+    console.log(
+      c.green(
+        '✔ mcp-vet: the plugin envelope conforms to Agent Plugins 1.0.0 and no bundled server source matches a 2026-07-28 breaking or deprecated pattern',
+      ),
+    );
+    return;
+  }
+
+  let currentFile = '';
+  for (const f of findings) {
+    if (f.file !== currentFile) {
+      currentFile = f.file;
+      console.log('');
+      console.log(c.underline(f.file));
+    }
+    const sev =
+      f.severity === 'BREAKING' ? c.red.bold('BREAKING') : c.yellow.bold('DEPRECATED');
+    const loc = c.cyan(`${f.file}:${f.line}${f.column ? ':' + f.column : ''}`);
+    const conf = c.gray(`[${f.confidence}]`);
+    console.log(`${loc}  ${sev}  ${c.bold(f.patternId)} ${conf}`);
+    console.log(indent(f.explanation, '    '));
+    console.log(c.gray('    — before:'));
+    console.log(indent(f.before, '      '));
+    console.log(c.gray('    + after:'));
+    console.log(c.green(indent(f.after, '      ')));
+  }
+
+  console.log('');
+  const { breaking, deprecated } = countBySeverity(findings);
+  const summary = `${findings.length} finding(s): ${breaking} BREAKING, ${deprecated} DEPRECATED`;
+  console.log(breaking > 0 ? c.red.bold(summary) : c.yellow.bold(summary));
+  console.log(c.gray(`See https://agent-plugins.org/specification and ${SPEC_URL}`));
 }
 
 function toPosix(p: string): string {
