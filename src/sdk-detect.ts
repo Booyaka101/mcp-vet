@@ -130,7 +130,10 @@ function pyprojectSpecifier(text: string, dep: string): string | null {
     const opensArray = inDepTable
       ? /^[\w.-]+\s*=\s*\[/.test(line)
       : /^[\w-]*dependencies\s*=\s*\[/.test(line);
-    if (opensArray || (inDepsArray && line)) {
+    // `inDepsArray` alone, not `inDepsArray && line`: a blank line inside a
+    // multi-line array is legal TOML and must not end the array early. Table
+    // headers reset it above, and the closing `]` resets it below.
+    if (opensArray || inDepsArray) {
       inDepsArray = !/\]/.test(line);
       const a = line.match(arrayItem);
       if (a) return (a[1] ?? '').trim();

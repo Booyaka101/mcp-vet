@@ -73,6 +73,11 @@ test('pyproject extras and PEP 735 groups are read, prose arrays are not', () =>
   clearSdkDetectionCache();
   assert.equal(detectMcpSdk(dir).major, 'v2', 'mcp declared in a PEP 735 group');
 
+  // A blank line inside a multi-line array is legal TOML.
+  write('[project]\ndependencies = [\n    "anyio>=4.5",\n\n    "mcp>=2.1",\n]\n');
+  clearSdkDetectionCache();
+  assert.equal(detectMcpSdk(dir).major, 'v2', 'blank line must not end the array');
+
   // A project merely NAMED mcp, or listing it as a keyword, declares nothing.
   write('[project]\nname = "mcp"\nversion = "2.0.0"\nkeywords = ["mcp", "server"]\ndependencies = ["anyio"]\n');
   clearSdkDetectionCache();
