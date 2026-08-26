@@ -64,7 +64,7 @@ function printPySdkStatus(result: ScanResult, c: any): void {
     const from = st.v1.specifier ? ` (mcp ${st.v1.specifier}${st.v1.source ? `, ${st.v1.source}` : ''})` : '';
     console.error(
       c.gray(
-        `note: this project declares Python SDK v1${from} — SDK ${PY_SDK_LATEST_V2} (${PY_SDK_LATEST_V2_DATE}) is available; the PY_SDK_V1 migration rules activate when the declared mcp major is 2. Preview with --py-sdk v2, or see ${PY_SDK_MIGRATION_URL}`,
+        `note: this project declares Python SDK v1${from}. SDK ${PY_SDK_LATEST_V2} (${PY_SDK_LATEST_V2_DATE}) is available; the PY_SDK_V1 migration rules activate when the declared mcp major is 2. Preview with --py-sdk v2, or see ${PY_SDK_MIGRATION_URL}`,
       ),
     );
   }

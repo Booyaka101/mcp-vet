@@ -9,57 +9,66 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 MCP Python SDK v2 awareness. The Python SDK's v2.0.0 went stable on
 2026-07-28 and v2.1.1 shipped 2026-08-25, renaming `FastMCP` to `MCPServer`
 (moved to `mcp.server.mcpserver`), `McpError` to `MCPError`, converting every
-protocol model field to snake_case for Python access (`inputSchema` →
+protocol model field to snake_case for Python access (`inputSchema` becomes
 `input_schema`; the wire JSON stays camelCase), deleting
 `streamablehttp_client` and the WebSocket transport, removing
 `MCPServer.get_context()`, switching timeouts to float seconds, dropping
-`pydantic-settings` (MCP_* env vars, which never took effect in v1 either),
-and replacing `httpx`/`httpx-sse` with `httpx2>=2.5.0`. mcp-vet's Python
-matcher table was v1-only, so a server that took the full v2 port presented
-nothing it recognized and a clean exit read as compliant — a silent
-under-report. This release fixes that and adds an advisory migration surface.
+`pydantic-settings` along with the MCP_* environment variables (which never
+took effect in v1 either), and replacing `httpx`/`httpx-sse` with
+`httpx2>=2.5.0`. mcp-vet's Python matcher table was v1-only, so a server that
+took the full v2 port presented nothing it recognized and a clean exit read as
+compliant. That silent under-report is what this release fixes, and it adds an
+advisory migration surface on top.
 
 ### Added
 
-- **12 `PY_SDK_V1_*` rules** (DEPRECATED tier — warn, exit 0, never fail a
-  build): `PY_SDK_V1_FASTMCP`, `PY_SDK_V1_MCPERROR`, `PY_SDK_V1_CAMEL_FIELDS`,
-  `PY_SDK_V1_STREAMABLEHTTP_CLIENT`, `PY_SDK_V1_WEBSOCKET`,
-  `PY_SDK_V1_GET_CONTEXT`, `PY_SDK_V1_TIMEDELTA`, `PY_SDK_V1_ENV`,
-  `PY_SDK_V1_OAUTH`, `PY_SDK_V1_CACHE_FALSE`, `PY_SDK_V1_FILERESOURCE`,
-  `PY_SDK_V1_HTTPX`. Every message quotes the migration guide
-  (py.sdk.modelcontextprotocol.io/v2/migration/, re-verified 2026-08-26) or a
-  release body verbatim. `PY_SDK_V1_FASTMCP` stays advisory even though the
-  failure under a v2-resolved `mcp` is a hard import-time crash (v2.1.1 ships
-  `mcp/server/fastmcp.py` as a raising stub): the declared range can still be
-  pinned back with `mcp<2` without touching the code, and the message carries
-  the crash fact and the stub's own migration-guide pointer.
+- **12 `PY_SDK_V1_*` rules** at the DEPRECATED tier (warn, exit 0, never fail
+  a build): `PY_SDK_V1_FASTMCP`, `PY_SDK_V1_MCPERROR`,
+  `PY_SDK_V1_CAMEL_FIELDS`, `PY_SDK_V1_STREAMABLEHTTP_CLIENT`,
+  `PY_SDK_V1_WEBSOCKET`, `PY_SDK_V1_GET_CONTEXT`, `PY_SDK_V1_TIMEDELTA`,
+  `PY_SDK_V1_ENV`, `PY_SDK_V1_OAUTH`, `PY_SDK_V1_CACHE_FALSE`,
+  `PY_SDK_V1_FILERESOURCE`, `PY_SDK_V1_HTTPX`. Every message quotes the
+  migration guide (py.sdk.modelcontextprotocol.io/v2/migration/, re-verified
+  2026-08-26) or a release body verbatim. `PY_SDK_V1_FASTMCP` stays advisory
+  even though the failure under a v2-resolved `mcp` is a hard import-time
+  crash (v2.1.1 ships `mcp/server/fastmcp.py` as a raising stub), because the
+  declared range can still be pinned back with `mcp<2` without touching the
+  code. The message carries the crash fact and the stub's own migration-guide
+  pointer.
 - **`src/sdk-detect.ts`** resolves the DECLARED mcp major from the nearest
-  `uv.lock` / `poetry.lock` (exact, wins), `pyproject.toml` (PEP 621 and
-  poetry tables), or `requirements*.txt`, walking up from each Python file.
+  `uv.lock` / `poetry.lock` (exact, wins), `pyproject.toml` (PEP 621
+  dependencies, optional-dependency extras, PEP 735 groups, poetry tables), or
+  `requirements*.txt`, walking up from each Python file and stopping at the
+  repository boundary so an unrelated parent manifest cannot decide the gate.
 - **`--py-sdk auto|v1|v2` and `--no-py-sdk`** (`pySdk` in `.mcpvetrc.json`).
-  `auto` (default): resolves to v2 → group active; v1 → group suppressed plus
-  one informational line naming v2.1.1 (2026-08-25); unresolvable → active
-  with every finding annotated "(mcp version undetermined)". `--no-py-sdk`
-  reproduces 0.11.0 output byte for byte (verified against a captured
-  baseline of every fixture). No Python files → the group is silently
+  `auto` is the default: v2 activates the group, v1 suppresses it and prints
+  one informational line naming v2.1.1 (2026-08-25), and an unresolvable
+  declaration runs the rules with every finding annotated "(mcp version
+  undetermined)". `--no-py-sdk` reproduces 0.11.0 output byte for byte,
+  verified against a captured baseline of every fixture on both the AST and
+  the regex-fallback paths. No Python files means the group is silently
   skipped. `--only`/`--disable` accept the new ids.
 - The group is gated per FILE on an actual `mcp` import, so a local class
   coincidentally named `FastMCP` stays clean, and per PROJECT on the declared
-  major. A half-migrated file (both `mcp.server.fastmcp` and
-  `mcp.server.mcpserver` imported) reports only the v1 import.
-  `PY_SDK_V1_HTTPX` stays quiet when the project declares httpx directly.
+  major. A half-migrated file that imports both `mcp.server.fastmcp` and
+  `mcp.server.mcpserver` reports only the v1 import. `PY_SDK_V1_HTTPX` stays
+  quiet when the project declares httpx directly.
 - Terminal reports gain a split summary when the group ran:
-  `22 spec rules, N breaking; 12 Python SDK rules, M advisory`. JSON/SARIF/
-  markdown carry the findings with the same shape as every other rule
-  (fired PY_SDK rules join the SARIF driver like probe/plugin rules do).
+  `22 spec rules, N breaking; 12 Python SDK rules, M advisory`. JSON, SARIF
+  and markdown carry the findings with the same shape as every other rule,
+  and fired PY_SDK rules join the SARIF driver the way probe and plugin rules
+  already do.
+- The library API exports the new surface: `PY_SDK_RULES`,
+  `ALL_PY_SDK_RULE_IDS`, `PySdkRuleId`, `PySdkMode`, `PySdkStatus`,
+  `detectMcpSdk`, `classifySpecifier`, `clearSdkDetectionCache`.
 
 ### Fixed
 
 - **The v2 under-report.** The pre-existing protocol rules were never behind
-  the new gating and now have a regression fixture proving it: a fully
-  v2-ported server (`mcp.server.mcpserver`) importing `mcp.server.sse` —
-  still a real module in v2.1.1 — keeps its `SSE_TRANSPORT_DEPRECATED` /
-  `ERROR_CODE_32002` / `LOGGING_SETLEVEL_REMOVED` findings and exit code.
+  the new gating, and now a regression fixture proves it: a fully v2-ported
+  server (`mcp.server.mcpserver`) importing `mcp.server.sse`, still a real
+  module in v2.1.1, keeps its `SSE_TRANSPORT_DEPRECATED`, `ERROR_CODE_32002`
+  and `LOGGING_SETLEVEL_REMOVED` findings and its exit code.
 
 ## [0.11.0]
 

@@ -41,13 +41,12 @@ export function classifySpecifier(spec: string): 'v1' | 'v2' | 'undetermined' {
     if (!m) continue;
     const op = m[1] ?? '==';
     const major = Number(m[2]);
+    const minor = m[3] === undefined ? undefined : Number(m[3]);
     if (op === '==' || op === '~=') return major >= 2 ? 'v2' : 'v1';
     if ((op === '>=' || op === '>') && major >= 2) lower2 = true;
-    if (op === '<' && major <= 2 && (major < 2 || true)) {
-      // <2 or <2.x caps below the point any 2.x could satisfy only when major===2
-      // with a .0-ish bound; a plain <2 always caps to v1.
-      if (major < 2 || (major === 2 && (m[3] === undefined || Number(m[3]) === 0))) capped1 = true;
-    }
+    // An upper bound caps the project to v1 only when nothing in 2.x can
+    // satisfy it: <2, <2.0, or <=1.x. `<2.5` still admits 2.0-2.4.
+    if (op === '<' && (major < 2 || (major === 2 && (minor === undefined || minor === 0)))) capped1 = true;
     if (op === '<=' && major < 2) capped1 = true;
   }
   if (capped1) return 'v1';
@@ -102,10 +101,12 @@ function pyprojectSpecifier(text: string, dep: string): string | null {
   const arrayItem = new RegExp(`["']${dep}(?:\\[[^\\]]*\\])?\\s*([^"']*)["']`, 'i');
   let inPoetryDeps = false;
   let inDepsArray = false;
+  let inDepTable = false;
   for (const raw of text.split(/\r?\n/)) {
     const line = raw.trim();
     if (line.startsWith('[')) {
       inPoetryDeps = /^\[tool\.poetry\.(group\.[^.\]]+\.)?dependencies\]/.test(line);
+      inDepTable = /^\[(project\.optional-dependencies|dependency-groups)\]/.test(line);
       inDepsArray = false;
       continue;
     }
@@ -121,11 +122,16 @@ function pyprojectSpecifier(text: string, dep: string): string | null {
       }
       continue;
     }
-    // PEP 621: `dependencies = [` / `optional-dependencies` extras arrays,
-    // possibly spanning lines. A bare "mcp" in keywords = [...] must not
-    // count, so only elements inside a dependency array are read.
-    if (/^[\w-]*dependencies\s*=\s*\[/.test(line) || (inDepsArray && line)) {
-      inDepsArray = !/\]/.test(line) || /^[\w-]*dependencies\s*=\s*\[[^\]]*$/.test(line);
+    // PEP 621 `dependencies = [`, any array inside
+    // [project.optional-dependencies] (extras are named freely, e.g.
+    // `server = ["mcp>=2.1"]`) and PEP 735 [dependency-groups], possibly
+    // spanning lines. A bare "mcp" in keywords = [...] must not count, so
+    // only elements inside a dependency array are read.
+    const opensArray = inDepTable
+      ? /^[\w.-]+\s*=\s*\[/.test(line)
+      : /^[\w-]*dependencies\s*=\s*\[/.test(line);
+    if (opensArray || (inDepsArray && line)) {
+      inDepsArray = !/\]/.test(line);
       const a = line.match(arrayItem);
       if (a) return (a[1] ?? '').trim();
     }
@@ -138,7 +144,13 @@ interface ManifestDir {
   files: string[];
 }
 
-/** The nearest ancestor of `startDir` (inclusive) containing any Python manifest. */
+/**
+ * The nearest ancestor of `startDir` (inclusive) containing any Python
+ * manifest. The walk stops at a repository boundary (a directory holding
+ * `.git`) after checking it: past that point a manifest belongs to some
+ * unrelated parent — a home directory, a monorepo sibling — and letting it
+ * decide whether the PY_SDK_V1 rules run would be worse than 'undetermined'.
+ */
 function findManifestDir(startDir: string): ManifestDir | null {
   let dir = path.resolve(startDir);
   for (;;) {
@@ -152,6 +164,7 @@ function findManifestDir(startDir: string): ManifestDir | null {
       (n) => n === 'pyproject.toml' || n === 'uv.lock' || n === 'poetry.lock' || /^requirements[^/\\]*\.txt$/i.test(n),
     );
     if (files.length) return { dir, files };
+    if (entries.includes('.git')) return null;
     const parent = path.dirname(dir);
     if (parent === dir) return null;
     dir = parent;

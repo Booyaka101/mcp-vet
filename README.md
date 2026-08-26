@@ -124,44 +124,47 @@ stays clean (locked by `negatives/plain-oauth-client.ts` / `.py`):
 MCP Python SDK **v2.0.0 went stable 2026-07-28** (v2.1.1 shipped 2026-08-25)
 and renamed or removed most of the v1 API surface. These 12 rules fire on v1
 SDK vocabulary in a project whose **declared** `mcp` dependency resolves to
-major 2 — where that vocabulary is a hard import-time crash (v2.1.1 ships
-`mcp/server/fastmcp.py` as a stub that raises `ModuleNotFoundError`) or a
-silent behavior change. They are SDK-level, not protocol-level, and all warn
+major 2, where that vocabulary is either a hard import-time crash (v2.1.1
+ships `mcp/server/fastmcp.py` as a stub that raises `ModuleNotFoundError`) or
+a silent behavior change. They are SDK-level, not protocol-level, and all warn
 at exit 0. Every message quotes the
 [migration guide](https://py.sdk.modelcontextprotocol.io/v2/migration/) or a
 [release body](https://github.com/modelcontextprotocol/python-sdk/releases).
 
 | ID | Fires on (in a file that imports `mcp`) |
 | --- | --- |
-| `PY_SDK_V1_FASTMCP` | `from mcp.server.fastmcp import FastMCP` → `from mcp.server.mcpserver import MCPServer` (a hard `ModuleNotFoundError` under v2) |
+| `PY_SDK_V1_FASTMCP` | `from mcp.server.fastmcp import FastMCP` → `from mcp.server.mcpserver import MCPServer`. A hard `ModuleNotFoundError` under v2 |
 | `PY_SDK_V1_MCPERROR` | `McpError` → `MCPError` |
-| `PY_SDK_V1_CAMEL_FIELDS` | attribute/kwarg access to `inputSchema` / `outputSchema` / `isError` / `nextCursor` → snake_case (raw JSON dicts stay clean — the wire is still camelCase in v2) |
+| `PY_SDK_V1_CAMEL_FIELDS` | attribute/kwarg access to `inputSchema` / `outputSchema` / `isError` / `nextCursor` → snake_case. Raw JSON dicts stay clean, because the wire format is still camelCase in v2 |
 | `PY_SDK_V1_STREAMABLEHTTP_CLIENT` | `streamablehttp_client` → `streamable_http_client` |
-| `PY_SDK_V1_WEBSOCKET` | `mcp.client.websocket` / `websocket_client` — the WebSocket transport (and the `ws` extra) is removed entirely |
-| `PY_SDK_V1_GET_CONTEXT` | `.get_context()` → a `ctx: Context` handler parameter (context is injected now) |
-| `PY_SDK_V1_TIMEDELTA` | a timeout kwarg passed `timedelta(...)` → float seconds (client request timeouts now raise `-32001` `REQUEST_TIMEOUT` instead of 408) |
-| `PY_SDK_V1_ENV` | `MCP_*` environment variables next to `environ`/`getenv` — v2 never reads them, and the guide notes they never took effect in v1 either |
-| `PY_SDK_V1_OAUTH` | `RFC7523OAuthClientProvider` / `JWTParameters` (removed) · `scopes=` on client-credentials providers → `scope=` · `OAuthClientProvider(timeout=)` (removed) |
+| `PY_SDK_V1_WEBSOCKET` | `mcp.client.websocket` / `websocket_client`. The WebSocket transport, and the `ws` extra, are removed entirely |
+| `PY_SDK_V1_GET_CONTEXT` | `.get_context()` → a `ctx: Context` handler parameter, since context is injected now |
+| `PY_SDK_V1_TIMEDELTA` | a timeout kwarg passed `timedelta(...)` → float seconds. Client request timeouts now raise `-32001` `REQUEST_TIMEOUT` instead of 408 |
+| `PY_SDK_V1_ENV` | `MCP_*` environment variables next to `environ`/`getenv`. v2 never reads them, and the guide notes they never took effect in v1 either |
+| `PY_SDK_V1_OAUTH` | `RFC7523OAuthClientProvider` / `JWTParameters` (removed), `scopes=` on client-credentials providers → `scope=`, and `OAuthClientProvider(timeout=)` (removed) |
 | `PY_SDK_V1_CACHE_FALSE` | `Client(cache=False)` → `Client(cache=None)` |
-| `PY_SDK_V1_FILERESOURCE` | `FileResource(is_binary=...)` → `encoding: str \| None` (passing `is_binary=` now raises `ValidationError`) |
-| `PY_SDK_V1_HTTPX` | `import httpx` in a project whose mcp resolves to v2 — v2 depends on `httpx2>=2.5.0` instead, so declare httpx yourself or port the import (a declared direct httpx dependency stays clean) |
+| `PY_SDK_V1_FILERESOURCE` | `FileResource(is_binary=...)` → `encoding: str \| None`. Passing `is_binary=` now raises `ValidationError` |
+| `PY_SDK_V1_HTTPX` | `import httpx` in a project whose mcp resolves to v2. v2 depends on `httpx2>=2.5.0` instead, so declare httpx yourself or port the import. A declared direct httpx dependency stays clean |
 
 **Gating (`--py-sdk auto`, the default).** The declared `mcp` specifier is
 read from the nearest `uv.lock` / `poetry.lock` (exact version, wins),
-`pyproject.toml`, or `requirements*.txt`, walking up from each Python file:
+`pyproject.toml` (PEP 621 dependencies, optional-dependency extras, PEP 735
+groups, and poetry tables), or `requirements*.txt`, walking up from each
+Python file and stopping at the repository boundary, so an unrelated parent
+manifest can never decide the gate:
 
-- resolves to **v2** → the group is active;
-- resolves to **v1** → the group is suppressed and one informational line
+- resolves to **v2**: the group is active;
+- resolves to **v1**: the group is suppressed and one informational line
   names v2.1.1 (2026-08-25) as available (preview with `--py-sdk v2`);
 - **unresolvable** (no manifest, no `mcp` entry, or a range like `>=1.26`
-  that admits both majors) → active, with every finding annotated
+  that admits both majors): active, with every finding annotated
   *"(mcp version undetermined)"*.
 
 `--py-sdk v1|v2` forces a side; `--no-py-sdk` removes the group entirely and
 reproduces pre-0.12.0 output byte for byte. The group is additionally gated
-per file on an actual `mcp` import (a local class named `FastMCP` in a
-non-MCP file stays clean), and it never gates the 22 protocol rules — a fully
-v2-ported server importing `mcp.server.sse` (still a real module in v2.1.1)
+per file on an actual `mcp` import, so a local class named `FastMCP` in a
+non-MCP file stays clean, and it never gates the 22 protocol rules. A fully
+v2-ported server importing `mcp.server.sse`, still a real module in v2.1.1,
 keeps its SSE findings, which is exactly the under-report 0.12.0 fixes.
 
 ### Confidence
@@ -628,7 +631,7 @@ Globs `**/*.{ts,tsx,mts,cts,js,jsx,mjs,cjs}` and `**/*.py`, skipping `node_modul
 | `--ignore <glob>` | ignore paths matching a gitignore-style glob (repeatable) |
 | `--max-file-size <kb>` | skip files larger than N KB (default 1536; `0` = no limit) |
 | `--no-py-fallback` | disable the regex fallback used when no Python interpreter is found |
-| `--py-sdk <mode>` | Python SDK v1→v2 migration rules: `auto` (default — read the declared `mcp` specifier), `v1`, or `v2` |
+| `--py-sdk <mode>` | Python SDK v1→v2 migration rules: `auto` (default; reads the declared `mcp` specifier), `v1`, or `v2` |
 | `--no-py-sdk` | disable the `PY_SDK_V1_*` rule group entirely (pre-0.12.0 output) |
 | `--config <path>` | path to a config file (see below) |
 | `--color` / `--no-color` | force or disable colored output |

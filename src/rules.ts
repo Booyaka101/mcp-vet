@@ -639,7 +639,7 @@ export const PY_SDK_RULES: Record<PySdkRuleId, PySdkRuleMeta> = {
     label: 'v1 FastMCP import (renamed to MCPServer)',
     severity: 'DEPRECATED',
     explanation:
-      'The migration guide: "The `FastMCP` class has been renamed to `MCPServer`" and moved from mcp.server.fastmcp to mcp.server.mcpserver. Under SDK v2 this import is a hard import-time crash, not a soft deprecation — v2.1.1 ships mcp/server/fastmcp.py as a stub whose whole body raises ModuleNotFoundError: "This is mcp 2.x, where FastMCP was renamed to MCPServer ... or pin \'mcp<2\' to keep running v1 code."',
+      'The migration guide: "The `FastMCP` class has been renamed to `MCPServer`" and moved from mcp.server.fastmcp to mcp.server.mcpserver. Under SDK v2 this import is a hard import-time crash, not a soft deprecation. v2.1.1 ships mcp/server/fastmcp.py as a stub whose whole body raises ModuleNotFoundError: "This is mcp 2.x, where FastMCP was renamed to MCPServer ... or pin \'mcp<2\' to keep running v1 code."',
     after: [
       '# SDK v2: from mcp.server.mcpserver import MCPServer, Context',
       'from mcp.server.mcpserver import MCPServer',
@@ -652,7 +652,7 @@ export const PY_SDK_RULES: Record<PySdkRuleId, PySdkRuleMeta> = {
     label: 'v1 McpError (renamed to MCPError)',
     severity: 'DEPRECATED',
     explanation:
-      'The migration guide: "The `McpError` exception class has been renamed to `MCPError` for consistent naming." Under SDK v2 the old name no longer exists — an except clause or raise using it fails at import/attribute time.',
+      'The migration guide: "The `McpError` exception class has been renamed to `MCPError` for consistent naming." Under SDK v2 the old name no longer exists, so an except clause or raise using it fails at import/attribute time.',
     after: 'from mcp.shared.exceptions import MCPError  # was: McpError',
     docUrl: `${PY_SDK_MIGRATION_URL}#mcperror-renamed-to-mcperror`,
   },
@@ -661,7 +661,7 @@ export const PY_SDK_RULES: Record<PySdkRuleId, PySdkRuleMeta> = {
     label: 'v1 camelCase model field access',
     severity: 'DEPRECATED',
     explanation:
-      'The migration guide: "All Pydantic model fields in the protocol types now use snake_case names for Python attribute access" — inputSchema → input_schema, isError → is_error, nextCursor → next_cursor. "The JSON wire format is unchanged — traffic the SDK sends still uses camelCase via Pydantic aliases", so only Python attribute/keyword access changes; raw JSON dicts stay camelCase and are not flagged.',
+      'The migration guide: "All Pydantic model fields in the protocol types now use snake_case names for Python attribute access": inputSchema → input_schema, isError → is_error, nextCursor → next_cursor. "The JSON wire format is unchanged — traffic the SDK sends still uses camelCase via Pydantic aliases", so only Python attribute/keyword access changes; raw JSON dicts stay camelCase and are not flagged.',
     after: [
       'tool.input_schema      # was tool.inputSchema',
       'result.is_error        # was result.isError',
@@ -683,9 +683,9 @@ export const PY_SDK_RULES: Record<PySdkRuleId, PySdkRuleMeta> = {
     label: 'v1 WebSocket transport (removed)',
     severity: 'DEPRECATED',
     explanation:
-      'The migration guide: "WebSocket transport removed" — the ws extra (websockets>=15.0.1) is gone with it. SDK v2 offers no WebSocket transport; migrate to Streamable HTTP or stdio.',
+      'The migration guide: "WebSocket transport removed". The ws extra (websockets>=15.0.1) is gone with it. SDK v2 offers no WebSocket transport; migrate to Streamable HTTP or stdio.',
     after: [
-      '# no WebSocket transport in SDK v2 — use Streamable HTTP:',
+      '# no WebSocket transport in SDK v2. Use Streamable HTTP:',
       'from mcp.client.streamable_http import streamable_http_client',
     ].join('\n'),
     docUrl: `${PY_SDK_MIGRATION_URL}#websocket-transport-removed`,
@@ -695,7 +695,7 @@ export const PY_SDK_RULES: Record<PySdkRuleId, PySdkRuleMeta> = {
     label: 'v1 get_context() (removed; context is injected)',
     severity: 'DEPRECATED',
     explanation:
-      'The migration guide: "MCPServer.get_context() has been removed. Context is now injected by the framework and passed explicitly" — declare a ctx: Context parameter on the handler instead of pulling context off the server object.',
+      'The migration guide: "MCPServer.get_context() has been removed. Context is now injected by the framework and passed explicitly". Declare a ctx: Context parameter on the handler instead of pulling context off the server object.',
     after: [
       'from mcp.server.mcpserver import Context',
       '',
@@ -720,7 +720,7 @@ export const PY_SDK_RULES: Record<PySdkRuleId, PySdkRuleMeta> = {
     label: 'MCP_* environment variables (never read by v2)',
     severity: 'DEPRECATED',
     explanation:
-      'The migration guide: "Settings is now a plain Pydantic model rather than a pydantic-settings BaseSettings, and pydantic-settings is no longer a dependency of the SDK." On MCP_* variables it notes "constructor arguments have always taken precedence, so those environment variables never took effect" — they were silently inert in v1 too, so this is a cleanup, not a behavior change.',
+      'The migration guide: "Settings is now a plain Pydantic model rather than a pydantic-settings BaseSettings, and pydantic-settings is no longer a dependency of the SDK." On MCP_* variables it notes "constructor arguments have always taken precedence, so those environment variables never took effect". They were silently inert in v1 too, so this is a cleanup, not a behavior change.',
     after: [
       'import os',
       'mcp = MCPServer("Demo", debug=os.environ.get("MCP_DEBUG") == "true")  # read the env yourself',
@@ -744,7 +744,7 @@ export const PY_SDK_RULES: Record<PySdkRuleId, PySdkRuleMeta> = {
     label: 'v1 Client(cache=False) (None is the off switch)',
     severity: 'DEPRECATED',
     explanation:
-      'The v2.0.0rc1 release notes: "Make CacheConfig() the Client cache default and None the off switch" — Client(cache=False) was replaced by Client(cache=None).',
+      'The v2.0.0rc1 release notes: "Make CacheConfig() the Client cache default and None the off switch". Client(cache=False) was replaced by Client(cache=None).',
     after: 'client = Client(..., cache=None)  # was: cache=False',
     docUrl: PY_SDK_RELEASES_URL,
   },
@@ -753,7 +753,7 @@ export const PY_SDK_RULES: Record<PySdkRuleId, PySdkRuleMeta> = {
     label: 'v1 FileResource(is_binary=) (replaced by encoding)',
     severity: 'DEPRECATED',
     explanation:
-      'The migration guide: FileResource\'s is_binary: bool is replaced by encoding: str | None (binary when None, text decoded as UTF-8 by default) — "Passing the removed `is_binary=` argument now raises a `ValidationError`."',
+      'The migration guide: FileResource\'s is_binary: bool is replaced by encoding: str | None (binary when None, text decoded as UTF-8 by default). "Passing the removed `is_binary=` argument now raises a `ValidationError`."',
     after: [
       'FileResource(uri="file:///logo.png", path=logo, mime_type="image/png")  # bytes, from mime_type',
       'FileResource(uri="file:///notes.txt", path=notes, encoding="latin-1")   # non-UTF-8 text',
@@ -765,7 +765,7 @@ export const PY_SDK_RULES: Record<PySdkRuleId, PySdkRuleMeta> = {
     label: 'httpx imported but no longer installed by mcp v2',
     severity: 'DEPRECATED',
     explanation:
-      'The migration guide: "The SDK now depends on httpx2 instead of httpx and httpx-sse" (httpx2>=2.5.0), and "httpx2 is API-compatible with httpx, so usually only the import name changes." This file imports httpx in a project whose mcp no longer installs it — declare httpx as a direct dependency or port the import to httpx2.',
+      'The migration guide: "The SDK now depends on httpx2 instead of httpx and httpx-sse" (httpx2>=2.5.0), and "httpx2 is API-compatible with httpx, so usually only the import name changes." This file imports httpx in a project whose mcp no longer installs it, so declare httpx as a direct dependency or port the import to httpx2.',
     after: 'import httpx2  # API-compatible; or declare httpx as a direct dependency',
     docUrl: `${PY_SDK_MIGRATION_URL}#httpx-and-httpx-sse-replaced-by-httpx2`,
   },
@@ -915,7 +915,10 @@ export function applyPySdkRules(
       if (v === 'timeout' && t.callee === 'OAuthClientProvider') {
         push('PY_SDK_V1_OAUTH', t, 'high');
       }
-      if (v === 'cache' && t.isFalse && t.callee.endsWith('Client')) {
+      // The SDK type is `Client`; `endsWith('Client')` would also claim
+      // httpx.AsyncClient(cache=False) and friends, which this change does
+      // not touch.
+      if (v === 'cache' && t.isFalse && (t.callee === 'Client' || t.callee === 'MCPClient')) {
         push('PY_SDK_V1_CACHE_FALSE', t, 'high');
       }
       if (v === 'is_binary' && t.callee === 'FileResource') {

@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync, rmSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -50,6 +50,48 @@ test('classifySpecifier reads declared majors correctly', () => {
   // Ranges a fresh install could resolve either way stay undetermined.
   assert.equal(classifySpecifier('>=1.26'), 'undetermined');
   assert.equal(classifySpecifier(''), 'undetermined');
+});
+
+test('an upper bound only caps to v1 when no 2.x can satisfy it', () => {
+  // <2 and <2.0 exclude every 2.x; <2.5 and <=2.0 do not.
+  assert.equal(classifySpecifier('>=1.9,<2.0'), 'v1');
+  assert.equal(classifySpecifier('<2'), 'v1');
+  assert.equal(classifySpecifier('<2.5'), 'undetermined');
+  assert.equal(classifySpecifier('<=2.0'), 'undetermined');
+  assert.equal(classifySpecifier('>=2.0,<3'), 'v2');
+});
+
+test('pyproject extras and PEP 735 groups are read, prose arrays are not', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'mcp-vet-toml-'));
+  const write = (body) => writeFileSync(join(dir, 'pyproject.toml'), body, 'utf8');
+
+  write('[project]\ndependencies = ["httpx>=0.28"]\n[project.optional-dependencies]\nserver = ["mcp>=2.1"]\n');
+  clearSdkDetectionCache();
+  assert.equal(detectMcpSdk(dir).major, 'v2', 'mcp declared in an extra');
+
+  write('[project]\ndependencies = ["anyio"]\n[dependency-groups]\ndev = ["mcp>=2.1", "pytest"]\n');
+  clearSdkDetectionCache();
+  assert.equal(detectMcpSdk(dir).major, 'v2', 'mcp declared in a PEP 735 group');
+
+  // A project merely NAMED mcp, or listing it as a keyword, declares nothing.
+  write('[project]\nname = "mcp"\nversion = "2.0.0"\nkeywords = ["mcp", "server"]\ndependencies = ["anyio"]\n');
+  clearSdkDetectionCache();
+  assert.equal(detectMcpSdk(dir).major, 'none', 'keywords/name are not dependencies');
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('the manifest walk stops at the repository boundary', () => {
+  // An unrelated parent manifest (a home dir, a monorepo sibling) must never
+  // decide the gate — 'undetermined' is the honest answer instead.
+  const root = mkdtempSync(join(tmpdir(), 'mcp-vet-boundary-'));
+  writeFileSync(join(root, 'pyproject.toml'), '[project]\ndependencies = ["mcp>=1.0,<2"]\n', 'utf8');
+  const repo = join(root, 'repo');
+  mkdirSync(join(repo, '.git'), { recursive: true });
+  mkdirSync(join(repo, 'src'), { recursive: true });
+  clearSdkDetectionCache();
+  const inner = detectMcpSdk(join(repo, 'src'));
+  rmSync(root, { recursive: true, force: true });
+  assert.equal(inner.major, 'undetermined', "the parent's mcp<2 pin must not leak in");
 });
 
 test('detectMcpSdk resolves pyproject, requirements.txt, and uv.lock (lock wins)', () => {
@@ -223,6 +265,36 @@ test('symbols in comments/docstrings do not fire on the AST path', () => {
   const res = runCli([dir]);
   rmSync(dir, { recursive: true, force: true });
   assert.equal(res.findings.length, 0, JSON.stringify(res.findings.map((f) => `${f.line}:${f.patternId}`)));
+});
+
+test('cache=False fires for the SDK Client only, not for any *Client', () => {
+  // httpx.AsyncClient(cache=False) in an MCP file is untouched by this change;
+  // keying on a `Client` suffix would have claimed it.
+  const dir = mkdtempSync(join(tmpdir(), 'mcp-vet-cache-'));
+  writeFileSync(join(dir, 'pyproject.toml'), '[project]\ndependencies = ["mcp>=2.1"]\n', 'utf8');
+  writeFileSync(
+    join(dir, 'app.py'),
+    [
+      'import httpx2',
+      'from mcp import Client',
+      '',
+      'http = httpx2.AsyncClient(cache=False)   # not the SDK Client',
+      'mcp_client = Client("https://example.com/mcp", cache=False)  # PY_SDK_V1_CACHE_FALSE',
+    ].join('\n'),
+    'utf8',
+  );
+  const res = runCli([dir]);
+  rmSync(dir, { recursive: true, force: true });
+  const hits = res.findings.filter((f) => f.patternId === 'PY_SDK_V1_CACHE_FALSE');
+  assert.equal(hits.length, 1, JSON.stringify(res.findings.map((f) => `${f.line}:${f.patternId}`)));
+  assert.equal(hits[0].line, 5, 'the SDK Client line, not the httpx2 one');
+});
+
+test('an invalid --py-sdk value exits 2 with a usable message', () => {
+  const res = runCli([join(pyFixtures, 'v2-project'), '--py-sdk', 'v3']);
+  assert.equal(res.status, 2);
+  assert.match(res.stderr, /invalid --py-sdk "v3"/);
+  assert.match(res.stderr, /auto, v1, v2/);
 });
 
 test('a local class named FastMCP with no mcp import stays clean', () => {
