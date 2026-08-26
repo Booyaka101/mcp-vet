@@ -15,6 +15,16 @@ export function regexFallbackTokens(text: string): Token[] {
   const numRe = /-?\b\d+\b/g;
   const idRe = /[A-Za-z_][A-Za-z0-9_]*/g;
   const capKeyRe = /\b(roots|sampling|logging)\s*[:=]/g;
+  // PY_SDK_V1 surfaces (SDK v1→v2 migration, 0.12.0). Import lines feed both
+  // the group's `import mcp` gate and the module-path rules; the rest mirror
+  // the AST scanner's attribute/kwarg context flags at line granularity.
+  const importRe = /^\s*(?:from\s+([\w.]+)\s+import\b|import\s+([\w.]+(?:\s*,\s*[\w.]+)*))/;
+  const pySdkNameRe = /^(?:McpError|streamablehttp_client|websocket_client|RFC7523OAuthClientProvider|JWTParameters|environ|getenv)$/;
+  const camelAttrRe = /\.\s*(inputSchema|outputSchema|isError|nextCursor)\b/g;
+  const camelKwargRe = /\b(inputSchema|outputSchema|isError|nextCursor)\s*=[^=]/g;
+  const getContextRe = /\.\s*(get_context)\s*\(/g;
+  const timedeltaKwargRe = /\b([A-Za-z_]\w*timeout\w*|read_timeout_seconds)\s*=\s*(?:datetime\s*\.\s*)?timedelta\s*\(/g;
+  const calleeKwargRe = /\b([A-Za-z_]\w*)\s*\([^()]*?\b(scopes|timeout|cache|is_binary)\s*=\s*([A-Za-z_]\w*|\[|['"{]|\d+)?/g;
   // HTTP+SSE transport surfaces (SSE_TRANSPORT_DEPRECATED, SEP-2596). The
   // module path is not a quoted string in Python, so it needs its own match;
   // the literal transport/event forms are marked like the AST analyzers do.
@@ -54,6 +64,70 @@ export function regexFallbackTokens(text: string): Token[] {
       ) {
         tokens.push({ kind: 'name', value: v, line: ln, col: m.index + 1 });
       }
+      if (pySdkNameRe.test(v)) {
+        tokens.push({ kind: 'name', value: v, line: ln, col: m.index + 1 });
+      }
+    }
+
+    // Import lines: the modules gate/drive the PY_SDK_V1 group, the imported
+    // names count as import-context usages of the v1 vocabulary.
+    const im = importRe.exec(line);
+    if (im) {
+      const modules = (im[1] ?? im[2] ?? '').split(',').map((s) => s.trim().split(/\s+as\s+/)[0]);
+      for (const mod of modules) {
+        // Same allowlist as the AST scanner: only mcp/httpx module paths are
+        // surfaced, so `import initialize` can't collide with method-string rules.
+        if (!/^(mcp|httpx)(\.|$)/.test(mod)) continue;
+        tokens.push({
+          kind: 'string',
+          value: mod,
+          line: ln,
+          col: line.indexOf(mod) + 1,
+          importModule: true,
+        });
+      }
+      idRe.lastIndex = 0;
+      while ((m = idRe.exec(line)) !== null) {
+        if (pySdkNameRe.test(m[0]) || m[0] === 'httpx') {
+          tokens.push({ kind: 'name', value: m[0], line: ln, col: m.index + 1, importName: true });
+        }
+      }
+    }
+
+    camelAttrRe.lastIndex = 0;
+    while ((m = camelAttrRe.exec(line)) !== null) {
+      tokens.push({ kind: 'name', value: m[1], line: ln, col: line.indexOf(m[1], m.index) + 1, attr: true });
+    }
+
+    camelKwargRe.lastIndex = 0;
+    while ((m = camelKwargRe.exec(line)) !== null) {
+      tokens.push({ kind: 'key', value: m[1], line: ln, col: m.index + 1, kwarg: true });
+    }
+
+    getContextRe.lastIndex = 0;
+    while ((m = getContextRe.exec(line)) !== null) {
+      tokens.push({ kind: 'name', value: 'get_context', line: ln, col: line.indexOf('get_context', m.index) + 1, attr: true });
+    }
+
+    timedeltaKwargRe.lastIndex = 0;
+    while ((m = timedeltaKwargRe.exec(line)) !== null) {
+      tokens.push({ kind: 'key', value: m[1], line: ln, col: m.index + 1, kwarg: true, timedeltaValue: true });
+    }
+
+    // Single-line `Callee(..., kwarg=value)` shapes — multi-line calls are a
+    // documented miss of the degraded path.
+    calleeKwargRe.lastIndex = 0;
+    while ((m = calleeKwargRe.exec(line)) !== null) {
+      const tok: Token = {
+        kind: 'key',
+        value: m[2],
+        line: ln,
+        col: line.indexOf(m[2], m.index) + 1,
+        kwarg: true,
+        callee: m[1],
+      };
+      if (m[2] === 'cache' && /\bcache\s*=\s*False\b/.test(line)) tok.isFalse = true;
+      tokens.push(tok);
     }
 
     capKeyRe.lastIndex = 0;

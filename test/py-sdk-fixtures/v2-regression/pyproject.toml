@@ -1,0 +1,4 @@
+[project]
+name = "v2-regression"
+version = "0.0.0"
+dependencies = ["mcp>=2.1"]

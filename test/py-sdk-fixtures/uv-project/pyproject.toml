@@ -1,0 +1,4 @@
+[project]
+name = "uv-app"
+version = "0.0.0"
+dependencies = ["mcp"]

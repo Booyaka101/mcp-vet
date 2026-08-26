@@ -1,12 +1,28 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { createColors } from './colors';
-import { Finding, Severity, ALL_PATTERN_IDS, RuntimeRuleId, PluginRuleId } from './types';
-import { RULES, RUNTIME_RULES, PLUGIN_RULES } from './rules';
+import {
+  Finding,
+  Severity,
+  ALL_PATTERN_IDS,
+  ALL_PY_SDK_RULE_IDS,
+  RuntimeRuleId,
+  PluginRuleId,
+  PySdkRuleId,
+} from './types';
+import { RULES, RUNTIME_RULES, PLUGIN_RULES, PY_SDK_RULES } from './rules';
 import { ScanResult } from './scanner';
 import type { ProbeResult } from './probe';
 import type { PluginVetResult } from './inputs/plugin';
-import { SPEC_URL, SPEC_DATE, MANUAL_REVIEW, getVersion } from './constants';
+import {
+  SPEC_URL,
+  SPEC_DATE,
+  MANUAL_REVIEW,
+  getVersion,
+  PY_SDK_MIGRATION_URL,
+  PY_SDK_LATEST_V2,
+  PY_SDK_LATEST_V2_DATE,
+} from './constants';
 
 function makeChalk(color: boolean | undefined) {
   // color === true -> force on; false -> force off; undefined -> auto-detect
@@ -25,6 +41,33 @@ function indent(text: string, pad: string): string {
 function countBySeverity(findings: Finding[]) {
   const breaking = findings.filter((f) => f.severity === 'BREAKING').length;
   return { breaking, deprecated: findings.length - breaking };
+}
+
+const isPySdkFinding = (f: Finding): boolean => f.patternId in PY_SDK_RULES;
+
+/** "22 spec rules, 0 breaking; 12 Python SDK rules, 2 advisory" */
+function pySdkSummaryLine(findings: Finding[]): string {
+  const spec = findings.filter((f) => !isPySdkFinding(f));
+  const breaking = spec.filter((f) => f.severity === 'BREAKING').length;
+  const advisory = findings.length - spec.length;
+  return `${ALL_PATTERN_IDS.length} spec rules, ${breaking} breaking; ${ALL_PY_SDK_RULE_IDS.length} Python SDK rules, ${advisory} advisory`;
+}
+
+/** The extra PY_SDK_V1 report lines (group summary + v1 informational note). */
+function printPySdkStatus(result: ScanResult, c: any): void {
+  const st = result.pySdkStatus;
+  if (!st) return;
+  if (st.evaluated) {
+    console.log(c.gray(pySdkSummaryLine(result.findings)));
+  }
+  if (st.v1) {
+    const from = st.v1.specifier ? ` (mcp ${st.v1.specifier}${st.v1.source ? `, ${st.v1.source}` : ''})` : '';
+    console.error(
+      c.gray(
+        `note: this project declares Python SDK v1${from} — SDK ${PY_SDK_LATEST_V2} (${PY_SDK_LATEST_V2_DATE}) is available; the PY_SDK_V1 migration rules activate when the declared mcp major is 2. Preview with --py-sdk v2, or see ${PY_SDK_MIGRATION_URL}`,
+      ),
+    );
+  }
 }
 
 export interface TerminalOptions {
@@ -60,6 +103,7 @@ export function reportTerminal(result: ScanResult, opts: TerminalOptions = {}): 
       c.green('✔ mcp-vet: no matching 2026-07-28 breaking or deprecated patterns found') +
         c.gray(` — ${result.filesScanned} file(s) scanned${suffix}`),
     );
+    printPySdkStatus(result, c);
     printManualReview(c);
     return;
   }
@@ -89,6 +133,7 @@ export function reportTerminal(result: ScanResult, opts: TerminalOptions = {}): 
   const suppressed =
     result.suppressedCount > 0 ? c.gray(` (${result.suppressedCount} suppressed)`) : '';
   console.log((breaking > 0 ? c.red.bold(summary) : c.yellow.bold(summary)) + suppressed);
+  printPySdkStatus(result, c);
   console.log(c.gray(`See ${SPEC_URL}`));
   printManualReview(c);
 }
@@ -206,46 +251,29 @@ export function renderSarif(result: Pick<ScanResult, 'findings'>): string {
       properties: { severity: r.severity },
     };
   });
-  // Runtime-probe and plugin rules join the driver metadata only when they
-  // actually fired, so static-scan SARIF keeps its stable rule shape.
-  const runtimeUsed = [
-    ...new Set(
-      result.findings
-        .map((f) => f.patternId)
-        .filter((id): id is RuntimeRuleId => id in RUNTIME_RULES),
-    ),
-  ];
-  for (const id of runtimeUsed) {
-    const r = RUNTIME_RULES[id];
-    rules.push({
-      id,
-      name: r.label.replace(/[^A-Za-z0-9]+/g, ''),
-      shortDescription: { text: r.label },
-      fullDescription: { text: r.explanation },
-      helpUri: r.docUrl,
-      defaultConfiguration: { level: sarifLevel(r.severity) },
-      properties: { severity: r.severity },
-    });
-  }
-  const pluginUsed = [
-    ...new Set(
-      result.findings
-        .map((f) => f.patternId)
-        .filter((id): id is PluginRuleId => id in PLUGIN_RULES),
-    ),
-  ];
-  for (const id of pluginUsed) {
-    const r = PLUGIN_RULES[id];
-    rules.push({
-      id,
-      name: r.label.replace(/[^A-Za-z0-9]+/g, ''),
-      shortDescription: { text: r.label },
-      fullDescription: { text: r.explanation },
-      helpUri: r.docUrl,
-      defaultConfiguration: { level: sarifLevel(r.severity) },
-      properties: { severity: r.severity },
-    });
-  }
+  // Runtime-probe, plugin, and Python-SDK rules join the driver metadata only
+  // when they actually fired, so static-scan SARIF keeps its stable rule shape.
+  type FiredRuleMeta = { label: string; explanation: string; docUrl: string; severity: Severity };
+  const pushFiredRules = (registry: Record<string, FiredRuleMeta>) => {
+    const used = [
+      ...new Set(result.findings.map((f) => f.patternId).filter((id) => id in registry)),
+    ];
+    for (const id of used) {
+      const r = registry[id];
+      rules.push({
+        id,
+        name: r.label.replace(/[^A-Za-z0-9]+/g, ''),
+        shortDescription: { text: r.label },
+        fullDescription: { text: r.explanation },
+        helpUri: r.docUrl,
+        defaultConfiguration: { level: sarifLevel(r.severity) },
+        properties: { severity: r.severity },
+      });
+    }
+  };
+  pushFiredRules(RUNTIME_RULES);
+  pushFiredRules(PLUGIN_RULES);
+  pushFiredRules(PY_SDK_RULES);
 
   const results = result.findings.map((f) => {
     // Prefer a cwd-relative posix uri; if the file lives outside cwd (relative

@@ -1,0 +1,6 @@
+# These fixtures are v1-era SSE servers; pinning mcp<2 keeps the PY_SDK_V1
+# group out of their expected output (the SSE rules fire regardless of major).
+[project]
+name = "sse-fixtures"
+version = "0.0.0"
+dependencies = ["mcp>=1.9,<2"]

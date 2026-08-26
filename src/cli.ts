@@ -2,10 +2,10 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { Command } from 'commander';
-import { scan, ScanError } from './scanner';
+import { scan, ScanError, PySdkMode } from './scanner';
 import { IgnoreMatcher } from './ignore';
 import { loadConfig, ConfigError, Config, FailOn } from './config';
-import { ALL_PATTERN_IDS, PatternId, Confidence } from './types';
+import { ALL_PATTERN_IDS, ALL_PY_SDK_RULE_IDS, PatternId, PySdkRuleId, Confidence } from './types';
 import { getVersion } from './constants';
 import {
   reportTerminal,
@@ -22,24 +22,28 @@ import { runPluginCli } from './plugin-cli';
 
 const CONF_VALUES: Confidence[] = ['high', 'medium', 'low'];
 const FAILON_VALUES: FailOn[] = ['breaking', 'any', 'none'];
+const PY_SDK_VALUES = ['auto', 'v1', 'v2'];
 
 function fail(msg: string): never {
   console.error(`mcp-vet: ${msg}`);
   process.exit(2);
 }
 
-function parsePatternIds(raw: string | undefined): PatternId[] | undefined {
+type AnyRuleId = PatternId | PySdkRuleId;
+const ALL_RULE_IDS: AnyRuleId[] = [...ALL_PATTERN_IDS, ...ALL_PY_SDK_RULE_IDS];
+
+function parsePatternIds(raw: string | undefined): AnyRuleId[] | undefined {
   if (!raw) return undefined;
   const parts = raw
     .toUpperCase()
     .split(/[\s,]+/)
     .filter(Boolean);
-  const ids: PatternId[] = [];
+  const ids: AnyRuleId[] = [];
   for (const p of parts) {
-    if (!ALL_PATTERN_IDS.includes(p as PatternId)) {
-      fail(`unknown pattern id "${p}". Valid ids: ${ALL_PATTERN_IDS.join(', ')}`);
+    if (!ALL_RULE_IDS.includes(p as AnyRuleId)) {
+      fail(`unknown pattern id "${p}". Valid ids: ${ALL_RULE_IDS.join(', ')}`);
     }
-    ids.push(p as PatternId);
+    ids.push(p as AnyRuleId);
   }
   return ids;
 }
@@ -138,6 +142,12 @@ function scanMain(): void {
     )
     .option('--max-file-size <kb>', 'skip files larger than this many KB (0 = no limit)', '1536')
     .option('--no-py-fallback', 'disable the regex fallback when no Python interpreter is found')
+    .option(
+      '--py-sdk <mode>',
+      `Python SDK v1→v2 migration rules: ${PY_SDK_VALUES.join(' | ')} (auto reads the declared mcp specifier)`,
+      'auto',
+    )
+    .option('--no-py-sdk', 'disable the PY_SDK_V1 rule group entirely (pre-0.12.0 output)')
     .option('--config <path>', 'path to a config file (.mcpvetrc.json)')
     .option('--fix', 'auto-apply the safe mechanical fixes in place (currently: -32002 → -32602)')
     .option('--dry-run', 'with --fix: print the rewrites that would be made, without changing files')
@@ -181,6 +191,7 @@ function scanMain(): void {
     ignore: string[];
     maxFileSize: string;
     pyFallback: boolean;
+    pySdk: string | boolean;
     config?: string;
     fix?: boolean;
     dryRun?: boolean;
@@ -218,23 +229,48 @@ function scanMain(): void {
     ? (opts.minConfidence as Confidence)
     : config.minConfidence ?? (opts.minConfidence as Confidence);
 
-  const normalizeIds = (ids?: string[]): PatternId[] | undefined =>
+  const normalizeIds = (ids?: string[]): AnyRuleId[] | undefined =>
     ids
       ?.map((s) => String(s).toUpperCase())
-      .filter((s): s is PatternId => ALL_PATTERN_IDS.includes(s as PatternId));
+      .filter((s): s is AnyRuleId => ALL_RULE_IDS.includes(s as AnyRuleId));
 
   const cliOnly = parsePatternIds(opts.only);
   const cliDisable = parsePatternIds(opts.disable);
   const only = cliOnly ?? normalizeIds(config.only);
   const disable = cliDisable ?? normalizeIds(config.disable);
 
+  const isPattern = (id: AnyRuleId): id is PatternId => ALL_PATTERN_IDS.includes(id as PatternId);
+  const isPySdk = (id: AnyRuleId): id is PySdkRuleId =>
+    ALL_PY_SDK_RULE_IDS.includes(id as PySdkRuleId);
+
   let enabled = new Set<PatternId>(ALL_PATTERN_IDS);
-  if (only && only.length) enabled = new Set(only.filter((id) => ALL_PATTERN_IDS.includes(id)));
+  let pySdkEnabled = new Set<PySdkRuleId>(ALL_PY_SDK_RULE_IDS);
+  if (only && only.length) {
+    enabled = new Set(only.filter(isPattern));
+    pySdkEnabled = new Set(only.filter(isPySdk));
+  }
   // `disable` always applies on top — so a CLI --disable still narrows a config `only`.
   if (disable && disable.length) {
-    for (const id of disable) enabled.delete(id);
+    for (const id of disable) {
+      if (isPattern(id)) enabled.delete(id);
+      if (isPySdk(id)) pySdkEnabled.delete(id);
+    }
   }
-  if (enabled.size === 0) fail('no rules enabled after applying --only/--disable.');
+  if (enabled.size === 0 && pySdkEnabled.size === 0) {
+    fail('no rules enabled after applying --only/--disable.');
+  }
+
+  // --py-sdk auto|v1|v2 · --no-py-sdk → false. CLI wins over config.
+  const pySdkRaw = fromCli('pySdk') ? opts.pySdk : config.pySdk ?? opts.pySdk;
+  let pySdkMode: PySdkMode;
+  if (pySdkRaw === false || pySdkRaw === 'off') pySdkMode = 'off';
+  else if (typeof pySdkRaw === 'string' && PY_SDK_VALUES.includes(pySdkRaw)) {
+    pySdkMode = pySdkRaw as PySdkMode;
+  } else {
+    fail(`invalid --py-sdk "${pySdkRaw}". Valid: ${PY_SDK_VALUES.join(', ')} (or --no-py-sdk)`);
+  }
+  // --only narrowed to spec rules alone → the group has nothing to say.
+  if (pySdkEnabled.size === 0) pySdkMode = 'off';
 
   const maxKbRaw = Number(opts.maxFileSize);
   if (!Number.isFinite(maxKbRaw) || maxKbRaw < 0) fail(`invalid --max-file-size "${opts.maxFileSize}".`);
@@ -276,6 +312,8 @@ function scanMain(): void {
       maxFileSizeKb,
       pythonFallback,
       minConfidence,
+      pySdkMode,
+      pySdkEnabled,
     });
   } catch (err) {
     if (err instanceof ScanError) fail(err.message);

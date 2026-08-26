@@ -25,6 +25,16 @@ export const SEP_2352_URL = 'https://github.com/modelcontextprotocol/modelcontex
 export const PR_2858_URL = 'https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2858';
 export const JSON_SCHEMA_2020_12 = 'https://json-schema.org/draft/2020-12/schema';
 /**
+ * The Python SDK v1→v2 migration guide — the canonical old→new mapping every
+ * PY_SDK_V1 rule quotes (re-verified 2026-08-26). Anchors below point into it;
+ * the #fastmcp one is the URL the v2 SDK's own ModuleNotFoundError cites.
+ */
+export const PY_SDK_MIGRATION_URL = 'https://py.sdk.modelcontextprotocol.io/v2/migration/';
+export const PY_SDK_RELEASES_URL = 'https://github.com/modelcontextprotocol/python-sdk/releases';
+/** Latest v2 release, named in the informational line when a project still declares v1. */
+export const PY_SDK_LATEST_V2 = 'v2.1.1';
+export const PY_SDK_LATEST_V2_DATE = '2026-08-25';
+/**
  * Agent Plugins 1.0 (GA in VS Code / Copilot CLI / the Copilot SDK and app on
  * 2026-08-12). The two canonical machine-readable schemas are vendored under
  * schemas/agent-plugins/1.0.0/ (fetched 2026-08-18) so `mcp-vet plugin`

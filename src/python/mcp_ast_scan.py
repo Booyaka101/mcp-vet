@@ -303,7 +303,7 @@ class Scanner:
             if original:
                 self.tokens.append({"kind": "name", "value": original, "line": node.lineno, "col": self._col(node)})
         elif isinstance(node, ast.Attribute):
-            tok = {"kind": "name", "value": node.attr, "line": node.lineno, "col": self._col(node)}
+            tok = {"kind": "name", "value": node.attr, "line": node.lineno, "col": self._col(node), "attr": True}
             # `transport.session_id` read = client-side session ownership.
             if node.attr in SESSION_KWARGS and TRANSPORTISH.search(_base_name(node.value)):
                 tok["clientSession"] = True
@@ -314,19 +314,28 @@ class Scanner:
             for a in node.names:
                 line = getattr(a, "lineno", None) or node.lineno
                 self.tokens.append(
-                    {"kind": "name", "value": a.name.rsplit(".", 1)[-1], "line": line, "col": self._col(a) or self._col(node)}
+                    {"kind": "name", "value": a.name.rsplit(".", 1)[-1], "line": line,
+                     "col": self._col(a) or self._col(node), "importName": True}
                 )
                 # `import mcp.server.sse` — the dotted path itself is a signal
                 # (module-path rules match on it), so surface it whole too.
                 if "." in a.name:
                     self.tokens.append(
-                        {"kind": "string", "value": a.name, "line": line, "col": self._col(a) or self._col(node)}
+                        {"kind": "string", "value": a.name, "line": line,
+                         "col": self._col(a) or self._col(node), "importModule": True}
                     )
             # `from mcp.server.sse import X` — surface the module path, which
             # otherwise never appears as a token (it is not a quoted string).
-            if isinstance(node, ast.ImportFrom) and node.module and "." in node.module:
+            # Dotless modules are surfaced only from an allowlist: the PY_SDK
+            # gate needs `from mcp import ...` / `from httpx import ...`, but a
+            # module named e.g. `initialize` must not collide with the
+            # method-string rules.
+            if isinstance(node, ast.ImportFrom) and node.module and (
+                "." in node.module or node.module in ("mcp", "httpx")
+            ):
                 self.tokens.append(
-                    {"kind": "string", "value": node.module, "line": node.lineno, "col": self._col(node)}
+                    {"kind": "string", "value": node.module, "line": node.lineno,
+                     "col": self._col(node), "importModule": True}
                 )
 
     def _maybe_cred_key(self, key_node):
@@ -402,7 +411,15 @@ class Scanner:
             for kw in node.keywords:
                 if kw.arg is not None:
                     line = getattr(kw, "lineno", None) or getattr(kw.value, "lineno", 0)
-                    tok = {"kind": "key", "value": kw.arg, "line": line, "col": self._col(kw)}
+                    # Call kwargs carry the callee so kwarg-shaped rules
+                    # (cache=False on Client, is_binary= on FileResource, ...)
+                    # can bind the argument to the API taking it.
+                    tok = {"kind": "key", "value": kw.arg, "line": line, "col": self._col(kw),
+                           "kwarg": True, "callee": fname}
+                    if isinstance(kw.value, ast.Call) and _func_name(kw.value.func) == "timedelta":
+                        tok["timedeltaValue"] = True
+                    if isinstance(kw.value, ast.Constant) and kw.value.value is False:
+                        tok["isFalse"] = True
                     if kw.arg in CAP:
                         tok["inCapabilities"] = caps_ctx
                     # `session_id=` into a transport/client factory = the client

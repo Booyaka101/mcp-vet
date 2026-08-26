@@ -4,6 +4,8 @@ import { PatternId, Confidence } from './types';
 
 export type FailOn = 'breaking' | 'any' | 'none';
 
+export type PySdkConfig = 'auto' | 'v1' | 'v2' | 'off';
+
 export interface Config {
   ignore?: string[];
   only?: PatternId[];
@@ -12,6 +14,8 @@ export interface Config {
   minConfidence?: Confidence;
   maxFileSizeKb?: number;
   pythonFallback?: boolean;
+  /** PY_SDK_V1 group gate — same values as --py-sdk, plus 'off' (--no-py-sdk) */
+  pySdk?: PySdkConfig;
 }
 
 const CONFIG_NAMES = ['.mcpvetrc.json', 'mcp-vet.config.json'];

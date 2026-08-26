@@ -1,18 +1,21 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { Finding, Token, PatternId, Confidence } from './types';
-import { applyRules } from './rules';
+import { Finding, Token, PatternId, PySdkRuleId, ALL_PY_SDK_RULE_IDS, Confidence } from './types';
+import { applyRules, applyPySdkRules } from './rules';
 import { analyzeTs } from './ts-analyzer';
 import { analyzePyBatch, pythonAvailable } from './py-analyzer';
 import { regexFallbackTokens } from './py-fallback';
 import { parseSuppressions } from './suppress';
 import { IgnoreMatcher } from './ignore';
+import { detectMcpSdk, SdkDetection } from './sdk-detect';
 
 const SKIP_DIRS = new Set(['node_modules', '.git', '__pycache__', 'dist', 'build']);
 const TS_EXT = new Set(['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs']);
 const PY_EXT = new Set(['.py']);
 
 const CONF_RANK: Record<Confidence, number> = { low: 1, medium: 2, high: 3 };
+
+export type PySdkMode = 'auto' | 'v1' | 'v2' | 'off';
 
 export interface ScanOptions {
   enabled: Set<PatternId>;
@@ -21,9 +24,29 @@ export interface ScanOptions {
   maxFileSizeKb: number;
   pythonFallback: boolean;
   minConfidence: Confidence;
+  /**
+   * Gate for the PY_SDK_V1 rule group (0.12.0). 'auto' resolves the declared
+   * `mcp` major per file from the nearest pyproject.toml / requirements*.txt /
+   * uv.lock; 'v1'/'v2' force it; 'off' (the API default, and `--no-py-sdk`)
+   * reproduces pre-0.12.0 output exactly.
+   */
+  pySdkMode?: PySdkMode;
+  /** the PY_SDK_V1 rules to evaluate; defaults to all of them */
+  pySdkEnabled?: Set<PySdkRuleId>;
 }
 
 export type PythonMode = 'ast' | 'regex' | 'none' | 'n/a';
+
+/** How the PY_SDK_V1 group resolved this scan — drives the extra report lines. */
+export interface PySdkStatus {
+  mode: Exclude<PySdkMode, 'off'>;
+  /** at least one Python file was evaluated against the group */
+  evaluated: boolean;
+  /** set when at least one file was suppressed because mcp resolves to v1 */
+  v1?: { specifier?: string; source?: string };
+  /** true when at least one file ran with an undetermined mcp major */
+  undetermined: boolean;
+}
 
 export interface ScanResult {
   findings: Finding[];
@@ -33,6 +56,8 @@ export interface ScanResult {
   suppressedCount: number;
   skippedLargeFiles: string[];
   roots: string[];
+  /** present only when the PY_SDK_V1 group was on and Python files were found */
+  pySdkStatus?: PySdkStatus;
 }
 
 export class ScanError extends Error {}
@@ -142,12 +167,7 @@ export function scan(roots: string[], opts: ScanOptions): ScanResult {
   const rawFindings: Finding[] = [];
   let suppressedCount = 0;
 
-  const emitForFile = (f: ScanFile, lines: string[], tokens: Token[], source: Finding['source']) => {
-    const found = applyRules(f.rel, lines, tokens, {
-      enabled: opts.enabled,
-      absPath: f.abs,
-      source: source!,
-    });
+  const pushFindings = (lines: string[], found: Finding[]) => {
     if (found.length === 0) return;
     const supp = parseSuppressions(lines);
     for (const finding of found) {
@@ -157,6 +177,48 @@ export function scan(roots: string[], opts: ScanOptions): ScanResult {
       }
       rawFindings.push(finding);
     }
+  };
+
+  const emitForFile = (f: ScanFile, lines: string[], tokens: Token[], source: Finding['source']) => {
+    pushFindings(
+      lines,
+      applyRules(f.rel, lines, tokens, {
+        enabled: opts.enabled,
+        absPath: f.abs,
+        source: source!,
+      }),
+    );
+  };
+
+  // --- PY_SDK_V1 group (0.12.0) — Python files only, gated on the declared
+  // mcp major. The pre-existing protocol rules above are NEVER gated by this:
+  // a v2 server importing mcp.server.sse still gets its SSE findings.
+  const pySdkMode: PySdkMode = opts.pySdkMode ?? 'off';
+  const pySdkEnabled = opts.pySdkEnabled ?? new Set<PySdkRuleId>(ALL_PY_SDK_RULE_IDS);
+  const pySdkStatus: PySdkStatus | undefined =
+    pySdkMode === 'off' ? undefined : { mode: pySdkMode, evaluated: false, undetermined: false };
+
+  const emitPySdkForFile = (f: ScanFile, lines: string[], tokens: Token[], source: Finding['source']) => {
+    if (!pySdkStatus || pySdkEnabled.size === 0) return;
+    const detection: SdkDetection = detectMcpSdk(path.dirname(f.abs));
+    const resolved = pySdkMode === 'auto' ? detection.major : pySdkMode;
+    if (resolved === 'v1') {
+      pySdkStatus.v1 = pySdkStatus.v1 ?? { specifier: detection.specifier, source: detection.source };
+      return;
+    }
+    pySdkStatus.evaluated = true;
+    const undetermined = resolved !== 'v2';
+    if (undetermined) pySdkStatus.undetermined = true;
+    pushFindings(
+      lines,
+      applyPySdkRules(f.rel, lines, tokens, {
+        enabled: pySdkEnabled,
+        absPath: f.abs,
+        source: source!,
+        undetermined,
+        httpxDeclared: detection.httpxDeclared,
+      }),
+    );
   };
 
   // TypeScript / JavaScript
@@ -187,6 +249,7 @@ export function scan(roots: string[], opts: ScanOptions): ScanResult {
         if (text === null) continue;
         const lines = text.split(/\r?\n/);
         emitForFile(f, lines, batch[f.abs] || [], 'python-ast');
+        emitPySdkForFile(f, lines, batch[f.abs] || [], 'python-ast');
       }
     } else if (opts.pythonFallback) {
       pythonMode = 'regex';
@@ -194,7 +257,9 @@ export function scan(roots: string[], opts: ScanOptions): ScanResult {
         const text = readText(f);
         if (text === null) continue;
         const lines = text.split(/\r?\n/);
-        emitForFile(f, lines, regexFallbackTokens(text), 'regex');
+        const tokens = regexFallbackTokens(text);
+        emitForFile(f, lines, tokens, 'regex');
+        emitPySdkForFile(f, lines, tokens, 'regex');
       }
     } else {
       pythonMode = 'none';
@@ -213,7 +278,7 @@ export function scan(roots: string[], opts: ScanOptions): ScanResult {
         a.patternId.localeCompare(b.patternId),
     );
 
-  return {
+  const result: ScanResult = {
     findings,
     filesScanned: files.length,
     pythonFilesFound: pyFiles.length,
@@ -222,4 +287,10 @@ export function scan(roots: string[], opts: ScanOptions): ScanResult {
     skippedLargeFiles,
     roots,
   };
+  // Only surface pySdkStatus when the group could have said something —
+  // no Python files means the group is silently skipped.
+  if (pySdkStatus && pyFiles.length > 0 && pythonMode !== 'none') {
+    result.pySdkStatus = pySdkStatus;
+  }
+  return result;
 }
