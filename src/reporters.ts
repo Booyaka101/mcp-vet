@@ -152,8 +152,15 @@ function printManualReview(c: any): void {
   );
 }
 
+/**
+ * Escape a value for a markdown table cell. The backslash has to go first, in
+ * the same pass as the pipe: escaping only the pipe leaves `\` untouched, so a
+ * path like `dir\|x.py` became `dir\\|x.py`, which markdown reads as an escaped
+ * backslash followed by a LIVE cell delimiter (CodeQL js/incomplete-sanitization).
+ * Scanned file paths are attacker-controllable input on a hostile repo.
+ */
 function mdEscape(s: string): string {
-  return s.replace(/\|/g, '\\|').replace(/\r?\n/g, ' ');
+  return s.replace(/[\\|]/g, '\\$&').replace(/\r?\n/g, ' ');
 }
 
 /** (b) Markdown table report. */

@@ -778,6 +778,38 @@ test('--fail-on none never fails; --fail-on any fails on deprecated', () => {
   assert.equal(depDefault.status, 0, 'deprecated-only default -> 0');
 });
 
+test('markdown cells escape backslashes as well as pipes (js/incomplete-sanitization)', () => {
+  const { renderMarkdown } = require('../dist/reporters.js');
+  const md = renderMarkdown({
+    findings: [
+      {
+        file: 'dir\\|evil.py',
+        line: 1,
+        patternId: 'ERROR_CODE_32002',
+        patternLabel: 'x',
+        severity: 'BREAKING',
+        confidence: 'high',
+        explanation: 'pipe | and backslash \\ and \\| together',
+        docUrl: 'https://example.com',
+        before: '',
+        after: '',
+      },
+    ],
+    suppressedCount: 0,
+  });
+  const row = md.split('\n').find((l) => l.includes('evil.py'));
+  assert.ok(row, 'the finding renders a row');
+  // Drop every escaped pair; only the six-column table's structural
+  // delimiters may remain. Escaping the pipe alone left `\\` in the cell,
+  // which markdown reads as an escaped backslash plus a LIVE delimiter.
+  const bare = row.replace(/\\[\\|]/g, '');
+  assert.equal(
+    (bare.match(/\|/g) || []).length,
+    7,
+    `expected only the 7 structural delimiters, got: ${row}`,
+  );
+});
+
 test('SARIF output is valid 2.1.0 with rules and results', () => {
   const out = mkdtempSync(join(tmpdir(), 'mcp-vet-'));
   const sarifPath = join(out, 'r.sarif');
