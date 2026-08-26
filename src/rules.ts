@@ -1,4 +1,4 @@
-import { Token, Finding, PatternId, RuntimeRuleId, PluginRuleId, Severity, Confidence } from './types';
+import { Token, Finding, PatternId, RuntimeRuleId, PluginRuleId, PySdkRuleId, Severity, Confidence } from './types';
 import {
   SPEC_URL,
   SEP_2106_URL,
@@ -10,6 +10,8 @@ import {
   AGENT_PLUGINS_SPEC_URL,
   AGENT_PLUGINS_PLUGIN_SCHEMA_URL,
   AGENT_PLUGINS_MCP_SCHEMA_URL,
+  PY_SDK_MIGRATION_URL,
+  PY_SDK_RELEASES_URL,
 } from './constants';
 
 interface RuleMeta {
@@ -607,6 +609,331 @@ export const PLUGIN_RULES: Record<PluginRuleId, PluginRuleMeta> = {
     docUrl: AGENT_PLUGINS_SPEC_URL,
   },
 };
+
+export interface PySdkRuleMeta {
+  id: PySdkRuleId;
+  label: string;
+  severity: Severity;
+  explanation: string;
+  /** the v2 form, rendered as the finding's `after` */
+  after: string;
+  docUrl: string;
+}
+
+/**
+ * Python SDK v1→v2 migration rules (added in 0.12.0). SDK-level, not
+ * protocol-level: MCP Python SDK v2.0.0 went stable 2026-07-28 (v2.1.1 shipped
+ * 2026-08-25) and renamed/removed the v1 API surface. Every explanation quotes
+ * the migration guide (py.sdk.modelcontextprotocol.io/v2/migration/,
+ * re-verified 2026-08-26) or a release body verbatim.
+ *
+ * All DEPRECATED tier — warn, exit 0, never fail a build — even
+ * PY_SDK_V1_FASTMCP, whose failure mode under a v2-resolved `mcp` is a hard
+ * import-time crash: the tier stays advisory because a declared range can
+ * still be pinned back (`mcp<2`) without touching the code, and the message
+ * carries the crash fact so nobody mistakes it for a soft deprecation.
+ */
+export const PY_SDK_RULES: Record<PySdkRuleId, PySdkRuleMeta> = {
+  PY_SDK_V1_FASTMCP: {
+    id: 'PY_SDK_V1_FASTMCP',
+    label: 'v1 FastMCP import (renamed to MCPServer)',
+    severity: 'DEPRECATED',
+    explanation:
+      'The migration guide: "The `FastMCP` class has been renamed to `MCPServer`" and moved from mcp.server.fastmcp to mcp.server.mcpserver. Under SDK v2 this import is a hard import-time crash, not a soft deprecation. v2.1.1 ships mcp/server/fastmcp.py as a stub whose whole body raises ModuleNotFoundError: "This is mcp 2.x, where FastMCP was renamed to MCPServer ... or pin \'mcp<2\' to keep running v1 code."',
+    after: [
+      '# SDK v2: from mcp.server.mcpserver import MCPServer, Context',
+      'from mcp.server.mcpserver import MCPServer',
+      'mcp = MCPServer("demo")',
+    ].join('\n'),
+    docUrl: `${PY_SDK_MIGRATION_URL}#fastmcp-renamed-to-mcpserver`,
+  },
+  PY_SDK_V1_MCPERROR: {
+    id: 'PY_SDK_V1_MCPERROR',
+    label: 'v1 McpError (renamed to MCPError)',
+    severity: 'DEPRECATED',
+    explanation:
+      'The migration guide: "The `McpError` exception class has been renamed to `MCPError` for consistent naming." Under SDK v2 the old name no longer exists, so an except clause or raise using it fails at import/attribute time.',
+    after: 'from mcp.shared.exceptions import MCPError  # was: McpError',
+    docUrl: `${PY_SDK_MIGRATION_URL}#mcperror-renamed-to-mcperror`,
+  },
+  PY_SDK_V1_CAMEL_FIELDS: {
+    id: 'PY_SDK_V1_CAMEL_FIELDS',
+    label: 'v1 camelCase model field access',
+    severity: 'DEPRECATED',
+    explanation:
+      'The migration guide: "All Pydantic model fields in the protocol types now use snake_case names for Python attribute access": inputSchema → input_schema, isError → is_error, nextCursor → next_cursor. "The JSON wire format is unchanged — traffic the SDK sends still uses camelCase via Pydantic aliases", so only Python attribute/keyword access changes; raw JSON dicts stay camelCase and are not flagged.',
+    after: [
+      'tool.input_schema      # was tool.inputSchema',
+      'result.is_error        # was result.isError',
+      'tool.model_dump(by_alias=True, mode="json")  # wire-format camelCase when you need it',
+    ].join('\n'),
+    docUrl: `${PY_SDK_MIGRATION_URL}#field-names-changed-from-camelcase-to-snake_case`,
+  },
+  PY_SDK_V1_STREAMABLEHTTP_CLIENT: {
+    id: 'PY_SDK_V1_STREAMABLEHTTP_CLIENT',
+    label: 'v1 streamablehttp_client (removed)',
+    severity: 'DEPRECATED',
+    explanation:
+      'The migration guide lists "streamablehttp_client removed" under Transports (its get_session_id callback is gone with it). SDK v2 exposes streamable_http_client instead.',
+    after: 'from mcp.client.streamable_http import streamable_http_client  # was: streamablehttp_client',
+    docUrl: `${PY_SDK_MIGRATION_URL}#streamablehttp_client-removed`,
+  },
+  PY_SDK_V1_WEBSOCKET: {
+    id: 'PY_SDK_V1_WEBSOCKET',
+    label: 'v1 WebSocket transport (removed)',
+    severity: 'DEPRECATED',
+    explanation:
+      'The migration guide: "WebSocket transport removed". The ws extra (websockets>=15.0.1) is gone with it. SDK v2 offers no WebSocket transport; migrate to Streamable HTTP or stdio.',
+    after: [
+      '# no WebSocket transport in SDK v2. Use Streamable HTTP:',
+      'from mcp.client.streamable_http import streamable_http_client',
+    ].join('\n'),
+    docUrl: `${PY_SDK_MIGRATION_URL}#websocket-transport-removed`,
+  },
+  PY_SDK_V1_GET_CONTEXT: {
+    id: 'PY_SDK_V1_GET_CONTEXT',
+    label: 'v1 get_context() (removed; context is injected)',
+    severity: 'DEPRECATED',
+    explanation:
+      'The migration guide: "MCPServer.get_context() has been removed. Context is now injected by the framework and passed explicitly". Declare a ctx: Context parameter on the handler instead of pulling context off the server object.',
+    after: [
+      'from mcp.server.mcpserver import Context',
+      '',
+      '@mcp.tool()',
+      'async def my_tool(x: int, ctx: Context) -> str:',
+      '    await ctx.report_progress(1, 2)  # was: ctx = mcp.get_context()',
+      '    return str(x)',
+    ].join('\n'),
+    docUrl: `${PY_SDK_MIGRATION_URL}#mcpserverget_context-removed`,
+  },
+  PY_SDK_V1_TIMEDELTA: {
+    id: 'PY_SDK_V1_TIMEDELTA',
+    label: 'v1 timedelta timeout (float seconds now)',
+    severity: 'DEPRECATED',
+    explanation:
+      'The migration guide: "Timeouts take float seconds instead of timedelta", and "Client request timeouts now raise -32001 (REQUEST_TIMEOUT) instead of 408". A timedelta handed to a v2 timeout parameter is the wrong type.',
+    after: 'session.call_tool("slow", args, read_timeout_seconds=30.0)  # was: timedelta(seconds=30)',
+    docUrl: `${PY_SDK_MIGRATION_URL}#timeouts-take-float-seconds-instead-of-timedelta`,
+  },
+  PY_SDK_V1_ENV: {
+    id: 'PY_SDK_V1_ENV',
+    label: 'MCP_* environment variables (never read by v2)',
+    severity: 'DEPRECATED',
+    explanation:
+      'The migration guide: "Settings is now a plain Pydantic model rather than a pydantic-settings BaseSettings, and pydantic-settings is no longer a dependency of the SDK." On MCP_* variables it notes "constructor arguments have always taken precedence, so those environment variables never took effect". They were silently inert in v1 too, so this is a cleanup, not a behavior change.',
+    after: [
+      'import os',
+      'mcp = MCPServer("Demo", debug=os.environ.get("MCP_DEBUG") == "true")  # read the env yourself',
+    ].join('\n'),
+    docUrl: `${PY_SDK_MIGRATION_URL}#mcp_-environment-variables-and-env-files-are-no-longer-read`,
+  },
+  PY_SDK_V1_OAUTH: {
+    id: 'PY_SDK_V1_OAUTH',
+    label: 'v1 OAuth surface (RFC7523 provider / scopes= / timeout=)',
+    severity: 'DEPRECATED',
+    explanation:
+      'The v2.0.0rc1 release notes: "Remove the deprecated RFC7523OAuthClientProvider" (JWTParameters goes with it), "Rename scopes= to scope= on the client-credentials OAuth providers", and "Remove the unused timeout parameter from OAuthClientProvider".',
+    after: [
+      'ClientCredentialsProvider(..., scope="read write")  # was: scopes=["read", "write"]',
+      'OAuthClientProvider(server_url=..., client_metadata=..., storage=...)  # no timeout=',
+    ].join('\n'),
+    docUrl: `${PY_SDK_MIGRATION_URL}#rfc7523oauthclientprovider-and-jwtparameters-removed`,
+  },
+  PY_SDK_V1_CACHE_FALSE: {
+    id: 'PY_SDK_V1_CACHE_FALSE',
+    label: 'v1 Client(cache=False) (None is the off switch)',
+    severity: 'DEPRECATED',
+    explanation:
+      'The v2.0.0rc1 release notes: "Make CacheConfig() the Client cache default and None the off switch". Client(cache=False) was replaced by Client(cache=None).',
+    after: 'client = Client(..., cache=None)  # was: cache=False',
+    docUrl: PY_SDK_RELEASES_URL,
+  },
+  PY_SDK_V1_FILERESOURCE: {
+    id: 'PY_SDK_V1_FILERESOURCE',
+    label: 'v1 FileResource(is_binary=) (replaced by encoding)',
+    severity: 'DEPRECATED',
+    explanation:
+      'The migration guide: FileResource\'s is_binary: bool is replaced by encoding: str | None (binary when None, text decoded as UTF-8 by default). "Passing the removed `is_binary=` argument now raises a `ValidationError`."',
+    after: [
+      'FileResource(uri="file:///logo.png", path=logo, mime_type="image/png")  # bytes, from mime_type',
+      'FileResource(uri="file:///notes.txt", path=notes, encoding="latin-1")   # non-UTF-8 text',
+    ].join('\n'),
+    docUrl: `${PY_SDK_MIGRATION_URL}#fileresourceis_binary-replaced-by-encoding`,
+  },
+  PY_SDK_V1_HTTPX: {
+    id: 'PY_SDK_V1_HTTPX',
+    label: 'httpx imported but no longer installed by mcp v2',
+    severity: 'DEPRECATED',
+    explanation:
+      'The migration guide: "The SDK now depends on httpx2 instead of httpx and httpx-sse" (httpx2>=2.5.0), and "httpx2 is API-compatible with httpx, so usually only the import name changes." This file imports httpx in a project whose mcp no longer installs it, so declare httpx as a direct dependency or port the import to httpx2.',
+    after: 'import httpx2  # API-compatible; or declare httpx as a direct dependency',
+    docUrl: `${PY_SDK_MIGRATION_URL}#httpx-and-httpx-sse-replaced-by-httpx2`,
+  },
+};
+
+// --- PY_SDK_V1 matcher tables ---------------------------------------------
+
+// v1-only module paths, matched against import-module tokens (exact or prefix).
+const PY_V1_MODULES: Record<string, PySdkRuleId> = {
+  'mcp.server.fastmcp': 'PY_SDK_V1_FASTMCP',
+  'mcp.client.websocket': 'PY_SDK_V1_WEBSOCKET',
+  'mcp.server.websocket': 'PY_SDK_V1_WEBSOCKET',
+};
+
+// v1-only names that no longer exist in v2, matched on import or usage.
+const PY_V1_NAMES: Record<string, PySdkRuleId> = {
+  McpError: 'PY_SDK_V1_MCPERROR',
+  streamablehttp_client: 'PY_SDK_V1_STREAMABLEHTTP_CLIENT',
+  websocket_client: 'PY_SDK_V1_WEBSOCKET',
+  RFC7523OAuthClientProvider: 'PY_SDK_V1_OAUTH',
+  JWTParameters: 'PY_SDK_V1_OAUTH',
+};
+
+// camelCase model fields renamed to snake_case — only the attribute/kwarg
+// forms count (wire JSON stays camelCase in v2 and must not be flagged).
+const PY_V1_CAMEL_FIELDS = new Set(['inputSchema', 'outputSchema', 'isError', 'nextCursor']);
+
+const MCP_ENV_RE = /^MCP_[A-Z][A-Z0-9_]*$/;
+const OAUTHISH_CALLEE_RE = /oauth|clientcredentials/i;
+
+export interface PySdkEngineOptions {
+  enabled: Set<PySdkRuleId>;
+  absPath: string;
+  source: NonNullable<Finding['source']>;
+  /** true when the declared mcp major could not be resolved — annotates findings */
+  undetermined: boolean;
+  /** true when the project declares httpx as a direct dependency (suppresses PY_SDK_V1_HTTPX) */
+  httpxDeclared: boolean;
+}
+
+/**
+ * Apply the PY_SDK_V1 rules to a Python file's tokens. The whole group is
+ * gated on the file importing `mcp` (or any `mcp.*` module) — a local class
+ * coincidentally named FastMCP in a non-MCP file must stay silent. The caller
+ * gates on the DECLARED mcp major (v2 → active, v1 → suppressed).
+ */
+export function applyPySdkRules(
+  relPath: string,
+  lines: string[],
+  tokens: Token[],
+  opts: PySdkEngineOptions,
+): Finding[] {
+  const findings: Finding[] = [];
+  const seen = new Set<string>();
+
+  const importsMcp = tokens.some(
+    (t) =>
+      (t.importModule || t.importName) &&
+      (t.value === 'mcp' || t.value.startsWith('mcp.')),
+  );
+  if (!importsMcp) return findings;
+  const sawEnvAccess = tokens.some(
+    (t) => t.kind === 'name' && (t.value === 'environ' || t.value === 'getenv'),
+  );
+
+  const push = (id: PySdkRuleId, t: Token, confidence: Confidence) => {
+    if (!opts.enabled.has(id)) return;
+    const key = `${t.line}|${t.col ?? 0}|${id}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    const m = PY_SDK_RULES[id];
+    const column = t.col;
+    findings.push({
+      file: relPath,
+      line: t.line,
+      column,
+      endColumn: column !== undefined ? column + t.value.length : undefined,
+      patternId: id,
+      patternLabel: m.label,
+      severity: m.severity,
+      confidence,
+      explanation: opts.undetermined ? `${m.explanation} (mcp version undetermined)` : m.explanation,
+      docUrl: m.docUrl,
+      before: snippet(lines, t.line),
+      after: m.after,
+      absPath: opts.absPath,
+      source: opts.source,
+    });
+  };
+
+  for (const t of tokens) {
+    const v = t.value;
+
+    // v1-only module paths (`from mcp.server.fastmcp import FastMCP`). Fires
+    // once per import line; usage sites of the imported names are not
+    // re-flagged, so a half-migrated file reports only its v1 import.
+    if (t.importModule) {
+      for (const [mod, id] of Object.entries(PY_V1_MODULES)) {
+        if (v === mod || v.startsWith(mod + '.')) push(id, t, 'high');
+      }
+    }
+
+    // v1-only names — on the import line or at a usage site.
+    if (t.kind === 'name' && PY_V1_NAMES[v]) {
+      push(PY_V1_NAMES[v], t, t.importName ? 'high' : 'medium');
+    }
+
+    // `import httpx` in a project whose mcp no longer installs it. Import
+    // statements only — a variable named httpx is not a dependency.
+    if (
+      !opts.httpxDeclared &&
+      (t.importName || t.importModule) &&
+      (v === 'httpx' || v.startsWith('httpx.'))
+    ) {
+      push('PY_SDK_V1_HTTPX', t, 'medium');
+    }
+
+    // camelCase model fields — attribute access (`tool.inputSchema`) and call
+    // kwargs (`Tool(inputSchema=...)`) only. Dict keys / string literals build
+    // wire JSON, which is still camelCase in v2, and stay clean.
+    if ((t.attr || t.kwarg) && PY_V1_CAMEL_FIELDS.has(v)) {
+      push('PY_SDK_V1_CAMEL_FIELDS', t, 'medium');
+    }
+
+    // `server.get_context()` — attribute form only; the injected `ctx`
+    // parameter is the MIGRATED form and a bare local get_context() is not
+    // the SDK method.
+    if (t.kind === 'name' && v === 'get_context' && t.attr) {
+      push('PY_SDK_V1_GET_CONTEXT', t, 'medium');
+    }
+
+    // timeout kwargs still passing timedelta(...).
+    if (t.kwarg && t.timedeltaValue && /timeout/i.test(v)) {
+      push('PY_SDK_V1_TIMEDELTA', t, 'high');
+    }
+
+    // MCP_* environment variables (only next to environ/getenv access).
+    if (t.kind === 'string' && MCP_ENV_RE.test(v) && sawEnvAccess) {
+      push('PY_SDK_V1_ENV', t, 'medium');
+    }
+
+    // scopes= on an OAuth-ish provider; timeout= on OAuthClientProvider.
+    if (t.kwarg && t.callee) {
+      if (v === 'scopes' && OAUTHISH_CALLEE_RE.test(t.callee)) {
+        push('PY_SDK_V1_OAUTH', t, 'medium');
+      }
+      if (v === 'timeout' && t.callee === 'OAuthClientProvider') {
+        push('PY_SDK_V1_OAUTH', t, 'high');
+      }
+      // The SDK type is `Client`; `endsWith('Client')` would also claim
+      // httpx.AsyncClient(cache=False) and friends, which this change does
+      // not touch.
+      if (v === 'cache' && t.isFalse && (t.callee === 'Client' || t.callee === 'MCPClient')) {
+        push('PY_SDK_V1_CACHE_FALSE', t, 'high');
+      }
+      if (v === 'is_binary' && t.callee === 'FileResource') {
+        push('PY_SDK_V1_FILERESOURCE', t, 'high');
+      }
+    }
+  }
+
+  return findings.sort(
+    (a, b) =>
+      a.line - b.line ||
+      (a.column ?? 0) - (b.column ?? 0) ||
+      a.patternId.localeCompare(b.patternId),
+  );
+}
 
 const CAP_RE = /capabilities/i;
 const CAP_NAMES: Record<string, PatternId> = {

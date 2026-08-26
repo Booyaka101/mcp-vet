@@ -1,0 +1,4 @@
+[project]
+name = "v1-project"
+version = "0.0.0"
+dependencies = ["mcp>=1.9,<2"]

@@ -137,8 +137,45 @@ export const ALL_PLUGIN_RULE_IDS: PluginRuleId[] = [
   'PLUGIN_SKILL_LAYOUT',
 ];
 
-/** Any violation id — static pattern, runtime probe category, or plugin rule. */
-export type ViolationId = PatternId | RuntimeRuleId | PluginRuleId;
+/**
+ * Python SDK v1→v2 migration rules (added in 0.12.0). These are SDK-level, not
+ * protocol-level: they fire on v1 python-sdk API surface (`mcp.server.fastmcp`,
+ * `McpError`, camelCase model fields, …) in a project whose declared `mcp`
+ * dependency resolves to major 2 — where that surface is a hard import-time
+ * crash or a silent behavior change. All DEPRECATED tier: they warn, exit 0,
+ * and never fail a build.
+ */
+export type PySdkRuleId =
+  | 'PY_SDK_V1_FASTMCP'
+  | 'PY_SDK_V1_MCPERROR'
+  | 'PY_SDK_V1_CAMEL_FIELDS'
+  | 'PY_SDK_V1_STREAMABLEHTTP_CLIENT'
+  | 'PY_SDK_V1_WEBSOCKET'
+  | 'PY_SDK_V1_GET_CONTEXT'
+  | 'PY_SDK_V1_TIMEDELTA'
+  | 'PY_SDK_V1_ENV'
+  | 'PY_SDK_V1_OAUTH'
+  | 'PY_SDK_V1_CACHE_FALSE'
+  | 'PY_SDK_V1_FILERESOURCE'
+  | 'PY_SDK_V1_HTTPX';
+
+export const ALL_PY_SDK_RULE_IDS: PySdkRuleId[] = [
+  'PY_SDK_V1_FASTMCP',
+  'PY_SDK_V1_MCPERROR',
+  'PY_SDK_V1_CAMEL_FIELDS',
+  'PY_SDK_V1_STREAMABLEHTTP_CLIENT',
+  'PY_SDK_V1_WEBSOCKET',
+  'PY_SDK_V1_GET_CONTEXT',
+  'PY_SDK_V1_TIMEDELTA',
+  'PY_SDK_V1_ENV',
+  'PY_SDK_V1_OAUTH',
+  'PY_SDK_V1_CACHE_FALSE',
+  'PY_SDK_V1_FILERESOURCE',
+  'PY_SDK_V1_HTTPX',
+];
+
+/** Any violation id — static pattern, runtime probe category, plugin rule, or Python SDK rule. */
+export type ViolationId = PatternId | RuntimeRuleId | PluginRuleId | PySdkRuleId;
 
 /**
  * A normalized syntactic token emitted by a language analyzer. Every analyzer
@@ -213,6 +250,35 @@ export interface Token {
    * hand-rolled two-endpoint signal for SSE_TRANSPORT_DEPRECATED.
    */
   sseEndpointEvent?: boolean;
+  /**
+   * True when a name/string token comes from an `import`/`from ... import`
+   * statement rather than a usage site. The PY_SDK_V1 rules key on imports —
+   * a bare identifier that happens to be named `httpx` or `FastMCP` is not
+   * evidence of the SDK dependency; the import is.
+   */
+  importName?: boolean;
+  /**
+   * True when a string token is a dotted module path surfaced from an import
+   * (`mcp.server.fastmcp`, `mcp.client.websocket`, plus the dotless allowlist
+   * `mcp` / `httpx` — dotless modules are otherwise never emitted so unrelated
+   * `from initialize import x` lines can't collide with method-string rules).
+   */
+  importModule?: boolean;
+  /**
+   * True when a name token is the attribute of an attribute access
+   * (`tool.inputSchema` → `inputSchema`). PY_SDK_V1_CAMEL_FIELDS only fires on
+   * attribute/kwarg forms — a `{"inputSchema": ...}` dict key is building wire
+   * JSON, which is still camelCase in SDK v2 and must stay clean.
+   */
+  attr?: boolean;
+  /** True when a key token is a call keyword argument (not a dict literal key). */
+  kwarg?: boolean;
+  /** For kwarg tokens: the name of the called function (`Client`, `FileResource`, …). */
+  callee?: string;
+  /** True when a kwarg's value is a `timedelta(...)` call (v1 timeout shape). */
+  timedeltaValue?: boolean;
+  /** True when a kwarg's value is the literal `False` (guards `Client(cache=False)`). */
+  isFalse?: boolean;
 }
 
 export interface Finding {

@@ -1,0 +1,6 @@
+# The negatives are "must stay clean" fixtures written against SDK v1;
+# declaring mcp<2 is the matching real-world clean case.
+[project]
+name = "negative-fixtures"
+version = "0.0.0"
+dependencies = ["mcp>=1.9,<2"]
