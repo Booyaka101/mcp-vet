@@ -6,6 +6,11 @@
  * security, cwd containment, skills layout), and runs the 22 static source
  * rules over server code the plugin bundles via a `./`-relative stdio command.
  *
+ * Manifest findings are severity-split by what a conformant client does, not
+ * by what the schema says (agent-plugins-spec#77): FATAL rejects, TOLERATED
+ * reports-and-loads (§5.2 unknown top-level fields, §8.1 non-object
+ * extensions). Every envelope finding carries the spec section it cites.
+ *
  * A server whose code cannot be reached (bare launcher token, remote URL,
  * non-source executable) gets a note saying why, never a silent skip.
  */
@@ -93,6 +98,8 @@ interface SchemaError {
   path: string;
   keyword: string;
   message: string;
+  /** for additionalProperties errors: the path of the object that rejected the key */
+  parent?: string;
 }
 
 function typeOf(v: unknown): string {
@@ -197,7 +204,7 @@ function validateSchema(
       if (k in props) {
         validateSchema(props[k], root, v, kp, errors);
       } else if (schema.additionalProperties === false) {
-        errors.push({ path: kp, keyword: 'additionalProperties', message: `unknown field "${k}"` });
+        errors.push({ path: kp, keyword: 'additionalProperties', message: `unknown field "${k}"`, parent: p });
       } else if (schema.additionalProperties !== undefined && schema.additionalProperties !== true) {
         validateSchema(schema.additionalProperties, root, v, kp, errors);
       }
@@ -246,6 +253,21 @@ function pathSegments(p: string): string[] {
     .split('.')
     .map((s) => s.replace(/\[\d+\]$/, ''))
     .filter(Boolean);
+}
+
+/**
+ * Which 1.0.0 section a FATAL manifest schema error violates: §5.3 covers a
+ * required field that is "missing, has the wrong type, is empty, or otherwise
+ * violates its requirements", §5.2 the unrecognized-$schema rejection, §5.5
+ * the name constraints, §5.4 the metadata fields.
+ */
+function manifestSection(e: SchemaError): string {
+  if (e.keyword === 'required') return '5.3';
+  if (e.path === '$schema') return '5.2';
+  if (e.path === 'name') {
+    return e.keyword === 'type' || e.keyword === 'minLength' ? '5.3' : '5.5';
+  }
+  return '5.4';
 }
 
 const CWD_RE = /^(?:\.\/|\$\{PLUGIN_ROOT\}(?:\/|$)|\$\{PLUGIN_DATA\}(?:\/|$))/;
@@ -309,6 +331,7 @@ export function vetPlugin(dir: string, opts: PluginVetOptions = {}): PluginVetRe
     loc: { line: number; col?: number },
     detail: string | null,
     lines: string[] | null,
+    section?: string,
   ) => {
     const key = `${file}|${loc.line}|${loc.col ?? 0}|${id}|${detail ?? ''}`;
     if (seen.has(key)) return;
@@ -326,6 +349,7 @@ export function vetPlugin(dir: string, opts: PluginVetOptions = {}): PluginVetRe
       docUrl: m.docUrl,
       before: lines ? snippet(lines, loc.line) : '(missing)',
       after: m.after,
+      section: section ?? m.section,
       absPath: path.join(root, ...file.split('/')),
     });
   };
@@ -343,6 +367,7 @@ export function vetPlugin(dir: string, opts: PluginVetOptions = {}): PluginVetRe
       { line: 1 },
       'no plugin.json at the plugin root — a plugin MUST include a manifest there, and conformant clients reject the package without one',
       null,
+      '5.1',
     );
   }
   if (manifestRaw !== null) {
@@ -357,13 +382,50 @@ export function vetPlugin(dir: string, opts: PluginVetOptions = {}): PluginVetRe
         { line: 1 },
         `plugin.json is not valid JSON (${(err as Error).message})`,
         manifestLines,
+        '5.1',
       );
       manifest = undefined;
     }
     if (manifest !== undefined) {
+      const schema = pluginSchema();
+      // §8.1: "A client MUST ignore manifest entries for namespaces it does
+      // not implement without validating the contents of their values."
+      // mcp-vet implements none, so extensions is opened for schema validation
+      // and only its own type is checked by hand — a non-object value is
+      // TOLERATED exactly once, an object's interior produces nothing at all.
+      const openExtensions = {
+        ...schema,
+        properties: { ...schema.properties, extensions: true },
+      };
       const errors: SchemaError[] = [];
-      validateSchema(pluginSchema(), pluginSchema(), manifest, '', errors);
+      validateSchema(openExtensions, openExtensions, manifest, '', errors);
+      const obj = manifest as Record<string, unknown>;
+      if ('extensions' in obj && typeOf(obj.extensions) !== 'object') {
+        push(
+          'PLUGIN_EXTENSIONS_NOT_OBJECT',
+          'plugin.json',
+          locateKey(manifestRaw, ['extensions']),
+          `extensions: must be an object keyed by reverse-domain namespace, got ${typeOf(obj.extensions)} — a conformant client reports this and continues loading components`,
+          manifestLines,
+        );
+      }
       for (const e of errors) {
+        if (e.keyword === 'additionalProperties' && e.parent === '') {
+          const componentNote =
+            e.path === 'skills'
+              ? '; note: skills declared here will NOT load — §6.1 discovers skills only from the skills/ directory'
+              : e.path === 'mcpServers'
+                ? '; note: MCP servers declared here will NOT load — §6.1 discovers MCP servers only from mcp.json at the plugin root'
+                : '';
+          push(
+            'PLUGIN_UNKNOWN_FIELD',
+            'plugin.json',
+            locateKey(manifestRaw, [e.path]),
+            `unknown top-level field "${e.path}" — a conformant client reports this and continues loading${componentNote}`,
+            manifestLines,
+          );
+          continue;
+        }
         const loc = e.path ? locateKey(manifestRaw, pathSegments(e.path)) : { line: 1 };
         push(
           'PLUGIN_MANIFEST_INVALID',
@@ -371,9 +433,13 @@ export function vetPlugin(dir: string, opts: PluginVetOptions = {}): PluginVetRe
           loc,
           `${e.path || 'plugin.json'}: ${e.message}`,
           manifestLines,
+          manifestSection(e),
         );
+        if (e.path === 'name' && e.keyword === 'pattern') {
+          push('PLUGIN_NAME_RE2_LOOKAHEAD', 'plugin.json', loc, null, manifestLines);
+        }
       }
-      const name = (manifest as Record<string, unknown>).name;
+      const name = obj.name;
       if (typeof name === 'string') pluginName = name;
     }
   }

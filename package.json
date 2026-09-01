@@ -1,6 +1,6 @@
 {
   "name": "@booyaka/mcp-vet",
-  "version": "0.12.0",
+  "version": "0.13.0",
   "description": "Scan MCP server source code and Agent Plugins 1.0 packages for patterns that break under the final 2026-07-28 Model Context Protocol specification.",
   "type": "commonjs",
   "main": "dist/index.js",

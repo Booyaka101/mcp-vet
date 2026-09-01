@@ -168,46 +168,124 @@ test('remote servers are noted as not-scannable with a probe pointer', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Manifest schema failures (the root schema is closed).
+// Manifest severities: FATAL rejects, TOLERATED reports-and-loads (§5.2/§8.1,
+// reclassified in 0.13.0 per agent-plugins-spec#77).
 // ---------------------------------------------------------------------------
 
-test('unknown top-level field in plugin.json fails PLUGIN_MANIFEST_INVALID, exit 1', () => {
+test('unknown top-level field is TOLERATED §5.2 and exits 0', () => {
   const res = runPlugin(join(plugins, 'manifest-invalid'));
-  assert.equal(res.status, 1);
-  assert.deepEqual(idsOf(res.findings), ['PLUGIN_MANIFEST_INVALID/BREAKING']);
-  assert.match(res.findings[0].explanation, /unknown field "commands"/);
+  assert.equal(res.status, 0, 'a conformant client loads this plugin, so mcp-vet must not fail it');
+  assert.deepEqual(idsOf(res.findings), ['PLUGIN_UNKNOWN_FIELD/TOLERATED']);
+  assert.equal(res.findings[0].section, '5.2');
+  assert.match(res.findings[0].explanation, /unknown top-level field "commands"/);
+  assert.match(res.findings[0].explanation, /continues loading/);
 });
 
-test('name containing "--" or ".." fails PLUGIN_MANIFEST_INVALID', () => {
+test('the dotnet/skills#1087 manifest shape: exit 0, two TOLERATED findings noting §6.1', () => {
+  const res = runPlugin(join(plugins, 'dotnet-1087'));
+  assert.equal(res.status, 0);
+  assert.deepEqual(idsOf(res.findings), [
+    'PLUGIN_UNKNOWN_FIELD/TOLERATED',
+    'PLUGIN_UNKNOWN_FIELD/TOLERATED',
+  ]);
+  for (const f of res.findings) assert.equal(f.section, '5.2');
+  const [skills, servers] = res.findings.map((f) => f.explanation);
+  assert.match(skills, /"skills"/);
+  assert.match(skills, /will NOT load — §6\.1 discovers skills only from the skills\/ directory/);
+  assert.match(servers, /"mcpServers"/);
+  assert.match(servers, /will NOT load — §6\.1 discovers MCP servers only from mcp\.json/);
+});
+
+test('extensions as a string/number/array/null: exactly one TOLERATED §8.1 each, exit 0', () => {
+  for (const extensions of ['nope', 7, [1, 2], null]) {
+    const dir = tempPlugin({ 'plugin.json': { ...validManifest, extensions } });
+    const res = runPlugin(dir);
+    rmSync(dir, { recursive: true, force: true });
+    assert.equal(res.status, 0, JSON.stringify(extensions));
+    assert.deepEqual(
+      idsOf(res.findings),
+      ['PLUGIN_EXTENSIONS_NOT_OBJECT/TOLERATED'],
+      JSON.stringify(extensions),
+    );
+    assert.equal(res.findings[0].section, '8.1');
+  }
+});
+
+test('unmodelled extensions namespaces are ignored without validating their values (§8.1)', () => {
+  const dir = tempPlugin({
+    'plugin.json': {
+      ...validManifest,
+      extensions: {
+        'com.example.deep': { anything: { nested: [1, 'x', null] }, atAll: false },
+        'com.other.mistyped': 'a string value',
+      },
+    },
+  });
+  const res = runPlugin(dir);
+  rmSync(dir, { recursive: true, force: true });
+  assert.equal(res.status, 0);
+  assert.deepEqual(idsOf(res.findings), []);
+});
+
+test('--fail-on any still fails on a TOLERATED-only run (explicit strictness opt-in)', () => {
+  const res = runPlugin(join(plugins, 'dotnet-1087'), ['--fail-on', 'any']);
+  assert.equal(res.status, 1);
+});
+
+test('name violating §5.5 stays FATAL and gains the RE2-lookahead INFO rider (#76)', () => {
   for (const bad of ['my--plugin', 'my..plugin', 'My-Plugin', '-leading']) {
     const dir = tempPlugin({ 'plugin.json': { $schema: PLUGIN_SCHEMA, name: bad } });
     const res = runPlugin(dir);
     rmSync(dir, { recursive: true, force: true });
     assert.equal(res.status, 1, `${bad} must fail`);
-    assert.deepEqual(idsOf(res.findings), ['PLUGIN_MANIFEST_INVALID/BREAKING'], bad);
+    assert.deepEqual(
+      idsOf(res.findings),
+      ['PLUGIN_MANIFEST_INVALID/FATAL', 'PLUGIN_NAME_RE2_LOOKAHEAD/INFO'],
+      bad,
+    );
+    const info = res.findings.find((f) => f.patternId === 'PLUGIN_NAME_RE2_LOOKAHEAD');
+    assert.equal(info.section, '5.5');
+    assert.match(info.explanation, /RE2/);
+    assert.match(info.docUrl, /agent-plugins-spec\/issues\/76/);
   }
 });
 
-test('missing plugin.json and malformed plugin.json both fail PLUGIN_MANIFEST_INVALID', () => {
+test('missing plugin.json and malformed plugin.json both stay FATAL (§5.1)', () => {
   const missing = tempPlugin({ 'mcp.json': { $schema: MCP_SCHEMA, mcpServers: {} } });
   const resMissing = runPlugin(missing);
   rmSync(missing, { recursive: true, force: true });
   assert.equal(resMissing.status, 1);
-  assert.deepEqual(idsOf(resMissing.findings), ['PLUGIN_MANIFEST_INVALID/BREAKING']);
+  assert.deepEqual(idsOf(resMissing.findings), ['PLUGIN_MANIFEST_INVALID/FATAL']);
+  assert.equal(resMissing.findings[0].section, '5.1');
 
   const malformed = tempPlugin({ 'plugin.json': '{ not json' });
   const resMalformed = runPlugin(malformed);
   rmSync(malformed, { recursive: true, force: true });
   assert.equal(resMalformed.status, 1);
-  assert.deepEqual(idsOf(resMalformed.findings), ['PLUGIN_MANIFEST_INVALID/BREAKING']);
+  assert.deepEqual(idsOf(resMalformed.findings), ['PLUGIN_MANIFEST_INVALID/FATAL']);
 });
 
-test('missing $schema in plugin.json fails (it is required)', () => {
+test('missing $schema stays FATAL (§5.3), exit 1', () => {
   const dir = tempPlugin({ 'plugin.json': { name: 'no-schema-plugin' } });
   const res = runPlugin(dir);
   rmSync(dir, { recursive: true, force: true });
   assert.equal(res.status, 1);
-  assert.deepEqual(idsOf(res.findings), ['PLUGIN_MANIFEST_INVALID/BREAKING']);
+  assert.deepEqual(idsOf(res.findings), ['PLUGIN_MANIFEST_INVALID/FATAL']);
+  assert.equal(res.findings[0].section, '5.3');
+});
+
+test('a $schema pinning an unknown version stays FATAL (§5.2)', () => {
+  const dir = tempPlugin({
+    'plugin.json': {
+      $schema: 'https://agent-plugins.org/schemas/2.0.0/plugin.schema.json',
+      name: 'future-plugin',
+    },
+  });
+  const res = runPlugin(dir);
+  rmSync(dir, { recursive: true, force: true });
+  assert.equal(res.status, 1);
+  assert.deepEqual(idsOf(res.findings), ['PLUGIN_MANIFEST_INVALID/FATAL']);
+  assert.equal(res.findings[0].section, '5.2');
 });
 
 // ---------------------------------------------------------------------------
@@ -340,18 +418,40 @@ test('--sarif carries the fired PLUGIN_ rules', () => {
   assert.equal(sarif.runs[0].results.length, 4);
 });
 
-test('SEVERITY LOCK: 6 plugin rules are BREAKING, 2 are DEPRECATED', () => {
-  assert.equal(ALL_PLUGIN_RULE_IDS.length, 8);
+test('SEVERITY LOCK: FATAL/TOLERATED/INFO for plugin.json, BREAKING/DEPRECATED for mcp.json+skills', () => {
+  assert.equal(ALL_PLUGIN_RULE_IDS.length, 11);
   const bySev = (sev) => ALL_PLUGIN_RULE_IDS.filter((id) => PLUGIN_RULES[id].severity === sev);
+  assert.deepEqual(bySev('FATAL'), ['PLUGIN_MANIFEST_INVALID']);
+  assert.deepEqual(bySev('TOLERATED').sort(), [
+    'PLUGIN_EXTENSIONS_NOT_OBJECT',
+    'PLUGIN_UNKNOWN_FIELD',
+  ]);
+  assert.deepEqual(bySev('INFO'), ['PLUGIN_NAME_RE2_LOOKAHEAD']);
+  // mcp.json findings keep the scan tiers: §7.2.1's variants are closed and a
+  // bad server entry genuinely invalidates it (untouched by 0.13.0).
   assert.deepEqual(bySev('BREAKING').sort(), [
     'PLUGIN_CMD_NOT_SINGLE_TOKEN',
     'PLUGIN_CWD_ESCAPE',
     'PLUGIN_ENV_RESERVED',
-    'PLUGIN_MANIFEST_INVALID',
     'PLUGIN_MCP_INVALID',
     'PLUGIN_REMOTE_INSECURE_URL',
   ]);
   assert.deepEqual(bySev('DEPRECATED').sort(), ['PLUGIN_SKILL_LAYOUT', 'PLUGIN_SSE_TRANSPORT']);
+  for (const id of ALL_PLUGIN_RULE_IDS) {
+    assert.match(PLUGIN_RULES[id].section, /^\d+(\.\d+)*$/, `${id} names a real 1.0.0 section`);
+  }
+});
+
+test('every envelope finding in the JSON report carries severity and a 1.0.0 section', () => {
+  const dirs = [join(plugins, 'dotnet-1087'), join(plugins, 'worked-example')];
+  for (const dir of dirs) {
+    const res = runPlugin(dir);
+    assert.ok(res.findings.length > 0, dir);
+    for (const f of res.findings) {
+      assert.ok(f.severity, `${dir}: severity present`);
+      assert.match(f.section, /^\d+(\.\d+)*$/, `${dir}: section "${f.section}" is a real section`);
+    }
+  }
 });
 
 test('programmatic API: vetPlugin returns servers, skills, and notes', () => {

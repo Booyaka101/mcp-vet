@@ -6,7 +6,9 @@
  * Vets the plugin envelope (plugin.json / mcp.json / skills layout) against
  * the vendored 1.0.0 schemas and runs the 22 static source rules over any MCP
  * server code bundled via a ./-relative stdio command. Shares the scan's
- * reporters and exit-code contract: any BREAKING finding exits 1.
+ * reporters and exit-code contract: any FATAL or BREAKING finding exits 1;
+ * TOLERATED (spec §5.2/§8.1 report-and-continue conditions), DEPRECATED and
+ * INFO exit 0.
  */
 import * as path from 'node:path';
 import { Command } from 'commander';
@@ -26,7 +28,7 @@ export function runPluginCli(argv: string[]): number {
   program
     .name('mcp-vet plugin')
     .description(
-      'Vet an Agent Plugins 1.0 package directory: validate plugin.json and mcp.json against the vendored 1.0.0 schemas (offline), enforce the spec\'s semantic rules (single-token stdio command, cwd containment, reserved env names, remote URL security, skills discovery layout), flag the deprecated HTTP+SSE transport, and run the 22 MCP 2026-07-28 source rules over any server code bundled in the plugin. Any BREAKING finding exits 1; DEPRECATED-only exits 0.',
+      'Vet an Agent Plugins 1.0 package directory: validate plugin.json and mcp.json against the vendored 1.0.0 schemas (offline), enforce the spec\'s semantic rules (single-token stdio command, cwd containment, reserved env names, remote URL security, skills discovery layout), flag the deprecated HTTP+SSE transport, and run the 22 MCP 2026-07-28 source rules over any server code bundled in the plugin. Envelope severities follow what a conformant client does: FATAL rejects the plugin and exits 1 (as does BREAKING); TOLERATED marks the schema violations spec §5.2/§8.1 require clients to report and keep loading, and exits 0 (as do DEPRECATED and INFO).',
     )
     .argument('<dir>', "the plugin's root directory (the one containing plugin.json)")
     .option('--fail-on <level>', `exit non-zero on: ${FAILON_VALUES.join(' | ')}`, 'breaking')
@@ -93,7 +95,7 @@ export function runPluginCli(argv: string[]): number {
   }
 
   const hasBreaking = result.findings.some(
-    (f) => f.severity === 'BREAKING' || f.severity === 'ERROR',
+    (f) => f.severity === 'BREAKING' || f.severity === 'ERROR' || f.severity === 'FATAL',
   );
   const hasAny = result.findings.length > 0;
   if (failOn === 'breaking') return hasBreaking ? 1 : 0;

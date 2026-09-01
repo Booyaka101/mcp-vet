@@ -482,6 +482,37 @@ The plugin format is one protocol revision behind the protocol it packages. The
 1.0.0 schema still accepts `type: "sse"`, which the MCP 2026-07-28 spec
 reclassifies as Deprecated (SEP-2596) and whose stream resumability it removes.
 
+**Schema-valid and spec-conformant are not the same thing here.** The published
+`plugin.schema.json` rejects two manifest conditions the spec requires clients
+to accept:
+[agent-plugins-spec#77](https://github.com/agentplugins/agent-plugins-spec/issues/77).
+§5.2 says clients *"MUST report and ignore each unknown field and MUST continue
+loading the plugin"*, and §8.1 says a non-object `extensions` means the client
+*"MUST report and ignore the field and continue loading components"* — but the
+schema closes the root (`additionalProperties: false`) and types `extensions`
+as an object, so a validate-and-reject tool calls both fatal. Since 0.13.0,
+`plugin.json` findings are therefore severity-split by what a conformant client
+actually does:
+
+- **FATAL** — a conformant client rejects the plugin (no manifest, unparsable
+  JSON, missing/wrong-typed required field, unrecognized `$schema` version, a
+  name outside §5.5). Exits 1.
+- **TOLERATED** — a conformant client reports the condition and keeps loading
+  (unknown top-level field §5.2, non-object `extensions` §8.1). Reported,
+  exits 0.
+- **INFO** — context only. One exists: alongside a §5.5 name violation,
+  mcp-vet notes that the official schema's negative-lookahead name pattern
+  cannot compile under RE2, so Go-based validators fail at schema compile time
+  instead of reporting the name
+  ([agent-plugins-spec#76](https://github.com/agentplugins/agent-plugins-spec/issues/76)).
+
+Every envelope finding also carries the 1.0.0 spec `section` it cites — in the
+terminal (`§5.2` next to the rule id), the JSON report, and SARIF
+`properties.section`. And per §8.1's *"MUST ignore manifest entries for
+namespaces it does not implement without validating the contents of their
+values"*, nothing inside `extensions` is validated at all — an unmodelled
+namespace containing anything produces zero findings.
+
 ```bash
 npx @booyaka/mcp-vet plugin ./my-plugin
 ```
@@ -514,7 +545,10 @@ vets the whole package in one pass:
 
 | Rule | Tier | Fires when |
 | --- | --- | --- |
-| `PLUGIN_MANIFEST_INVALID` | 🔴 BREAKING | `plugin.json` fails the 1.0.0 manifest schema: absent manifest, missing `$schema`, an unknown top-level field (the root is closed; client data belongs under `extensions`), or a `name` breaking the 1–64-char lowercase pattern (no `--` or `..`) |
+| `PLUGIN_MANIFEST_INVALID` | 🔴 FATAL | `plugin.json` violates a requirement conformant clients reject: absent manifest or unparsable JSON (§5.1), a missing/wrong-typed/empty required field (§5.3), an unrecognized `$schema` version (§5.2), or a `name` breaking §5.5's 1–64-char lowercase pattern (no `--` or `..`) |
+| `PLUGIN_UNKNOWN_FIELD` | 🔵 TOLERATED | an unknown top-level manifest field. §5.2 makes clients report and ignore it and keep loading, so mcp-vet reports it and exits 0. A field named `skills` or `mcpServers` gets a note that those components will not load (§6.1 discovers them from `skills/` and `mcp.json` only) |
+| `PLUGIN_EXTENSIONS_NOT_OBJECT` | 🔵 TOLERATED | `extensions` is a string, number, array or null. §8.1 makes clients report and ignore the field and continue loading components. Fires exactly once, never per interior key |
+| `PLUGIN_NAME_RE2_LOOKAHEAD` | ⚪ INFO | rides along with a §5.5 name violation: the official schema's negative-lookahead pattern does not compile under RE2, so Go-based validators error out at schema compile time instead of reporting the name (spec issue #76) |
 | `PLUGIN_MCP_INVALID` | 🔴 BREAKING | `mcp.json` fails the 1.0.0 MCP schema. The root must be exactly `$schema` + `mcpServers`, and each server must match exactly one closed variant (`stdio`, `streamable-http`, `sse`). Unknown types, cross-variant fields, and containment failures land here |
 | `PLUGIN_CMD_NOT_SINGLE_TOKEN` | 🔴 BREAKING | a stdio `command` is not a single executable token, bare or beginning with `./`. Clients don't shell-split: `"node server.js"` is looked up as an executable literally named `node server.js` |
 | `PLUGIN_CWD_ESCAPE` | 🔴 BREAKING | `cwd` doesn't start with `./`, `${PLUGIN_ROOT}` or `${PLUGIN_DATA}`, or starts with `./` but resolves outside the plugin root |
@@ -549,6 +583,25 @@ mcp.json:11:7  BREAKING    PLUGIN_CWD_ESCAPE            local: "../shared" does 
 4 finding(s): 3 BREAKING, 1 DEPRECATED   → exit 1
 ```
 
+And the TOLERATED side, on the manifest shape reported in
+[dotnet/skills#1087](https://github.com/dotnet/skills/issues/1087)
+(fixture-locked in `test/fixtures/plugins/dotnet-1087`) — `plugin.json`
+declaring `"skills": []` and `"mcpServers": {}` at the top level:
+
+```text
+plugin.json:4:3  TOLERATED  PLUGIN_UNKNOWN_FIELD §5.2 [high]
+    unknown top-level field "skills" — a conformant client reports this and continues loading;
+    note: skills declared here will NOT load — §6.1 discovers skills only from the skills/ directory
+plugin.json:5:3  TOLERATED  PLUGIN_UNKNOWN_FIELD §5.2 [high]
+    unknown top-level field "mcpServers" — a conformant client reports this and continues loading;
+    note: MCP servers declared here will NOT load — §6.1 discovers MCP servers only from mcp.json at the plugin root
+
+2 finding(s): 2 TOLERATED   → exit 0
+```
+
+Before 0.13.0 those were two schema violations and an exit 1 — mcp-vet said
+the plugin was broken while every conformant client loads it.
+
 ### Edge cases it gets right
 
 - A missing `mcp.json` is valid and silent (spec §6.2: an absent component
@@ -556,14 +609,18 @@ mcp.json:11:7  BREAKING    PLUGIN_CWD_ESCAPE            local: "../shared" does 
   empty.
 - A reverse-domain top-level directory such as `com.github.copilot/` is a
   legal client-extension directory and is ignored, not flagged.
-- `plugin.json` with an unknown top-level field fails, because the root schema
-  is closed (`"additionalProperties": false`).
+- A `$schema` pinning a version mcp-vet does not know stays FATAL — §5.2 makes
+  clients reject an unrecognized version, so that is not a tolerated drift.
+- `extensions` set to a string is TOLERATED exactly once, not once per
+  interior key; an unmodelled namespace whose value is an object containing
+  anything at all produces zero findings (§8.1).
 - A plugin bundling a non-source executable (say a compiled binary) as its
   server gets an explicit "can't audit this" note, not silence.
 
 `--json`, `--sarif`, `--fail-on`, and the exit-code contract are shared with
-the scan: any BREAKING finding exits 1, DEPRECATED-only exits 0, unusable
-input exits 2.
+the scan: any FATAL or BREAKING finding exits 1; TOLERATED, DEPRECATED and
+INFO exit 0 (`--fail-on any` still fails on them); unusable input exits 2.
+In SARIF, TOLERATED and INFO map to level `note`.
 
 ## Where mcp-vet fits (and where it doesn't)
 
@@ -675,7 +732,7 @@ You can also list ignore globs one-per-line in a `.mcpvetignore` file.
 
 1. **Terminal** — compiler-style `file:line:col`, red for BREAKING, yellow for DEPRECATED, grouped by file, with before/after snippets and a `[confidence]` tag.
 2. **`mcp-vet-report.md`** — a Markdown table (File · Line · Pattern · Severity · Confidence · Explanation).
-3. **`mcp-vet-results.json`** — a structured JSON array of every finding (line, column, confidence, docUrl, before/after, source analyzer).
+3. **`mcp-vet-results.json`** — a structured JSON array of every finding (line, column, confidence, docUrl, before/after, source analyzer, and `section` — the Agent Plugins 1.0.0 spec section on envelope findings, `null` elsewhere).
 4. **`--github-annotations`** — native GitHub Actions annotations that surface inline on the PR diff.
 5. **`--sarif`** — SARIF 2.1.0 for GitHub Advanced Security "code scanning" (uploads via `github/codeql-action/upload-sarif`).
 
