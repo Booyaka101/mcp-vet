@@ -1,9 +1,13 @@
 /**
  * BREAKING/DEPRECATED are the static-scan severities; ERROR/WARN are the
- * runtime-probe severities (`mcp-vet probe`). BREAKING and ERROR fail the
- * build under `--fail-on breaking`; DEPRECATED and WARN only warn.
+ * runtime-probe severities (`mcp-vet probe`); FATAL/TOLERATED/INFO are the
+ * plugin-envelope severities (`mcp-vet plugin`, plugin.json findings). FATAL
+ * means a conformant client rejects the plugin or the component; TOLERATED
+ * means it reports the condition and keeps loading (spec §5.2 / §8.1 — see
+ * agent-plugins-spec#77); INFO is context only. BREAKING, ERROR and FATAL
+ * fail the build under `--fail-on breaking`; everything else only warns.
  */
-export type Severity = 'BREAKING' | 'DEPRECATED' | 'ERROR' | 'WARN';
+export type Severity = 'BREAKING' | 'DEPRECATED' | 'ERROR' | 'WARN' | 'FATAL' | 'TOLERATED' | 'INFO';
 
 export type Confidence = 'high' | 'medium' | 'low';
 
@@ -118,6 +122,9 @@ export const ALL_RUNTIME_RULE_IDS: RuntimeRuleId[] = [
  */
 export type PluginRuleId =
   | 'PLUGIN_MANIFEST_INVALID'
+  | 'PLUGIN_UNKNOWN_FIELD'
+  | 'PLUGIN_EXTENSIONS_NOT_OBJECT'
+  | 'PLUGIN_NAME_RE2_LOOKAHEAD'
   | 'PLUGIN_MCP_INVALID'
   | 'PLUGIN_CMD_NOT_SINGLE_TOKEN'
   | 'PLUGIN_CWD_ESCAPE'
@@ -128,6 +135,9 @@ export type PluginRuleId =
 
 export const ALL_PLUGIN_RULE_IDS: PluginRuleId[] = [
   'PLUGIN_MANIFEST_INVALID',
+  'PLUGIN_UNKNOWN_FIELD',
+  'PLUGIN_EXTENSIONS_NOT_OBJECT',
+  'PLUGIN_NAME_RE2_LOOKAHEAD',
   'PLUGIN_MCP_INVALID',
   'PLUGIN_CMD_NOT_SINGLE_TOKEN',
   'PLUGIN_CWD_ESCAPE',
@@ -301,6 +311,8 @@ export interface Finding {
   before: string;
   /** the correct 2026-07-28 pattern */
   after: string;
+  /** Agent Plugins 1.0.0 spec section the finding cites (e.g. "5.2") — envelope findings only */
+  section?: string;
   /** absolute path — internal only, stripped from serialized output */
   absPath?: string;
   /** the analyzer that produced it — internal only */

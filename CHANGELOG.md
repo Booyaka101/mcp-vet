@@ -4,6 +4,67 @@ All notable changes to `mcp-vet` are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.13.0]
+
+Envelope severity split: FATAL versus TOLERATED. A correctness fix to the
+Agent Plugins envelope validation added in 0.12.0, driven by
+[agent-plugins-spec#77](https://github.com/agentplugins/agent-plugins-spec/issues/77)
+(filed 2026-08-31): the published `plugin.schema.json` rejects two manifest
+conditions that spec §5.2 and §8.1 require clients to report, ignore, and keep
+loading. mcp-vet validated against the schema and failed the run, so it told
+users a plugin was broken when every conformant client loads it. Envelope
+findings are now classified by what a conformant client does, not by what the
+schema says — schema-valid and spec-conformant are not the same thing here.
+
+### Added
+
+- **Envelope severities `FATAL`, `TOLERATED` and `INFO`** on plugin.json
+  findings. FATAL means a conformant client rejects the plugin or the
+  component and exits 1; TOLERATED means §5.2/§8.1 require the client to
+  report the condition and continue loading, and exits 0; INFO is context
+  only. Every envelope finding now carries a `section` field naming the
+  1.0.0 spec section it cites, in the JSON report, SARIF `properties`, and
+  the terminal report (`§5.2` next to the rule id).
+- **`PLUGIN_UNKNOWN_FIELD`** (TOLERATED, §5.2) — an unknown top-level
+  manifest field. Quotes §5.2: clients "MUST report and ignore each unknown
+  field and MUST continue loading the plugin if the manifest otherwise
+  satisfies this section." When the field is named `skills` or `mcpServers`
+  (the dotnet/skills#1087 shape), the finding notes those components will
+  not load, because §6.1 discovers skills from `skills/` and MCP servers
+  from `mcp.json` only.
+- **`PLUGIN_EXTENSIONS_NOT_OBJECT`** (TOLERATED, §8.1) — `extensions` set to
+  a string, number, array or null. Reported exactly once for the field,
+  never once per interior key. Quotes §8.1: "the client MUST report and
+  ignore the field and continue loading components."
+- **`PLUGIN_NAME_RE2_LOOKAHEAD`** (INFO, §5.5) — fires alongside a §5.5 name
+  violation to note that the official schema expresses the name rule with a
+  negative lookahead RE2-based (Go) validators cannot compile at all, so
+  Go tooling errors out at schema compile time instead of reporting the name
+  ([agent-plugins-spec#76](https://github.com/agentplugins/agent-plugins-spec/issues/76)).
+
+### Changed
+
+- **`PLUGIN_MANIFEST_INVALID` is now severity FATAL** (was BREAKING) and
+  covers only the conditions conformant clients reject: no manifest (§5.1),
+  unparsable JSON, a missing / wrong-typed / empty required field (§5.3), an
+  unrecognized `$schema` version (§5.2), a name outside §5.5. Exit-code
+  behaviour is unchanged for these — still 1.
+- **Per §8.1, nothing inside `extensions` is validated any more.** "A client
+  MUST ignore manifest entries for namespaces it does not implement without
+  validating the contents of their values" — mcp-vet implements none, so an
+  unmodelled namespace whose value is an object containing anything at all
+  (or even a mistyped non-object value) produces zero findings. Previously a
+  non-object namespace value was a BREAKING schema error.
+- **The JSON report gains a `section` field on every finding** (`null` for
+  non-envelope findings); SARIF results and fired plugin rules carry
+  `properties.section`; SARIF level for TOLERATED/INFO is `note`.
+- Tests that asserted exit 1 for the two reclassified cases now assert
+  exit 0 with one TOLERATED finding each — the old expectations enforced the
+  schema bug #77 describes, so they changed with the classification.
+- mcp.json findings are untouched: §7.2.1's transport variants are closed
+  and a bad server entry genuinely invalidates that entry, so
+  `PLUGIN_MCP_INVALID` and friends keep their BREAKING/DEPRECATED tiers.
+
 ## [0.12.0]
 
 MCP Python SDK v2 awareness. The Python SDK's v2.0.0 went stable on

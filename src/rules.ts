@@ -10,6 +10,8 @@ import {
   AGENT_PLUGINS_SPEC_URL,
   AGENT_PLUGINS_PLUGIN_SCHEMA_URL,
   AGENT_PLUGINS_MCP_SCHEMA_URL,
+  AGENT_PLUGINS_ISSUE_77_URL,
+  AGENT_PLUGINS_ISSUE_76_URL,
   PY_SDK_MIGRATION_URL,
   PY_SDK_RELEASES_URL,
 } from './constants';
@@ -508,6 +510,8 @@ export interface PluginRuleMeta {
   id: PluginRuleId;
   label: string;
   severity: Severity;
+  /** Agent Plugins 1.0.0 spec section the rule enforces; overridable per finding */
+  section: string;
   explanation: string;
   /** the corrected Agent Plugins 1.0.0 form, rendered as the finding's `after` */
   after: string;
@@ -518,17 +522,23 @@ export interface PluginRuleMeta {
  * Agent Plugins 1.0 package rules (`mcp-vet plugin <dir>`, added in 0.11.0).
  * These vet the plugin envelope — plugin.json, mcp.json, and the skills/
  * layout — against the vendored 1.0.0 schemas and the spec's semantic
- * requirements (schemas/agent-plugins/1.0.0/, fetched 2026-08-18). Findings
- * carry the same shape and exit-code contract as the static scan: BREAKING
- * exits 1, DEPRECATED exits 0.
+ * requirements (schemas/agent-plugins/1.0.0/, fetched 2026-08-18).
+ *
+ * Severities follow what a conformant client does with the condition, not what
+ * the published schema says (the two disagree — agent-plugins-spec#77): FATAL
+ * means the client rejects the plugin, TOLERATED means §5.2/§8.1 require it to
+ * report the condition and keep loading, INFO is context only. mcp.json
+ * findings keep the scan tiers (BREAKING exits 1, DEPRECATED exits 0) because
+ * §7.2.1's variants are closed and a bad entry genuinely invalidates it.
  */
 export const PLUGIN_RULES: Record<PluginRuleId, PluginRuleMeta> = {
   PLUGIN_MANIFEST_INVALID: {
     id: 'PLUGIN_MANIFEST_INVALID',
-    label: 'plugin.json fails the 1.0.0 manifest schema',
-    severity: 'BREAKING',
+    label: 'plugin.json violates a fatal 1.0.0 manifest requirement',
+    severity: 'FATAL',
+    section: '5.2',
     explanation:
-      'plugin.json does not validate against the Agent Plugins 1.0.0 manifest schema. The root object is closed ("additionalProperties": false) and requires $schema and name; name is 1-64 chars of lowercase alphanumerics, hyphens and periods with no "--" or "..". Conformant clients reject the plugin (or, for an unknown top-level field, report and ignore it) — either way it does not load as authored.',
+      'plugin.json fails the Agent Plugins 1.0.0 manifest requirements in a way conformant clients reject: no manifest at the plugin root (§5.1), unparsable JSON, a missing / wrong-typed / empty required field (§5.3: "the manifest is invalid"), an unrecognized $schema version (§5.2: clients "MUST reject the plugin"), or a name outside §5.5\'s constraints (1-64 chars of lowercase alphanumerics, hyphens and periods, no "--" or ".."). The spec-tolerated schema violations — an unknown top-level field, a non-object extensions — are NOT this rule; they report as TOLERATED and do not fail the run.',
     after: [
       '{',
       '  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",',
@@ -538,10 +548,43 @@ export const PLUGIN_RULES: Record<PluginRuleId, PluginRuleMeta> = {
     ].join('\n'),
     docUrl: AGENT_PLUGINS_PLUGIN_SCHEMA_URL,
   },
+  PLUGIN_UNKNOWN_FIELD: {
+    id: 'PLUGIN_UNKNOWN_FIELD',
+    label: 'unknown top-level manifest field (spec-tolerated)',
+    severity: 'TOLERATED',
+    section: '5.2',
+    explanation:
+      'The published schema closes the manifest root ("additionalProperties": false), but spec §5.2 overrides it: "Clients MUST report and ignore each unknown field and MUST continue loading the plugin if the manifest otherwise satisfies this section." Schema-valid and spec-conformant part ways here (agent-plugins-spec#77) — every conformant client loads this plugin and reports the field, so mcp-vet reports it and exits 0.',
+    after:
+      '// delete the field, or move client-specific data under "extensions": { "com.example.client": { ... } }',
+    docUrl: AGENT_PLUGINS_ISSUE_77_URL,
+  },
+  PLUGIN_EXTENSIONS_NOT_OBJECT: {
+    id: 'PLUGIN_EXTENSIONS_NOT_OBJECT',
+    label: 'extensions is not an object (spec-tolerated)',
+    severity: 'TOLERATED',
+    section: '8.1',
+    explanation:
+      'The published schema types extensions as an object, but spec §8.1 overrides a mistyped value: "If extensions is not an object, the client MUST report and ignore the field and continue loading components." Reported exactly once for the field, never per interior key (agent-plugins-spec#77). The data itself is lost — no conformant client reads a non-object extensions.',
+    after: '"extensions": { "com.example.client": { } }  // reverse-domain namespace → object',
+    docUrl: AGENT_PLUGINS_ISSUE_77_URL,
+  },
+  PLUGIN_NAME_RE2_LOOKAHEAD: {
+    id: 'PLUGIN_NAME_RE2_LOOKAHEAD',
+    label: 'name pattern is uncheckable by RE2-based (Go) validators',
+    severity: 'INFO',
+    section: '5.5',
+    explanation:
+      'Context for the §5.5 name violation above: the official schema expresses the no-"--"/".." rule with a negative lookahead ((?!.*(?:--|\\.\\.))) that RE2 — Go\'s regexp, and every RE2-based JSON Schema validator — cannot compile at all. The failure is at schema compile time, so a Go-based tool refuses to load plugin.schema.json entirely instead of reporting the name (agent-plugins-spec#76). If your Go tooling errored out on this plugin rather than flagging the name, that is why.',
+    after:
+      '// fix the name per §5.5 and every validator agrees again: 1-64 chars of [a-z0-9.-],\n// starting and ending alphanumeric, no "--" or ".."',
+    docUrl: AGENT_PLUGINS_ISSUE_76_URL,
+  },
   PLUGIN_MCP_INVALID: {
     id: 'PLUGIN_MCP_INVALID',
     label: 'mcp.json fails the 1.0.0 MCP configuration schema',
     severity: 'BREAKING',
+    section: '7.2.1',
     explanation:
       'mcp.json does not validate against the Agent Plugins 1.0.0 MCP configuration schema: the root requires exactly $schema and mcpServers, and every server entry must match exactly one closed transport variant (stdio, streamable-http, or sse). An unknown field, an unknown type value, or a field belonging to another variant makes the server entry invalid, and conformant clients will not start it.',
     after: [
@@ -558,6 +601,7 @@ export const PLUGIN_RULES: Record<PluginRuleId, PluginRuleMeta> = {
     id: 'PLUGIN_CMD_NOT_SINGLE_TOKEN',
     label: 'stdio command is not a single executable token',
     severity: 'BREAKING',
+    section: '7.2.1',
     explanation:
       'The Agent Plugins spec: "The command field MUST contain a single executable token, not a shell command string. It MUST be either a bare executable name or a plugin-relative path beginning with ./". Clients do not shell-split this value — a command like "node server.js" is looked up verbatim as an executable named "node server.js" and fails to launch.',
     after: '"command": "node", "args": ["${PLUGIN_ROOT}/server.js"]  // or bundle it: "command": "./server.js"',
@@ -567,6 +611,7 @@ export const PLUGIN_RULES: Record<PluginRuleId, PluginRuleMeta> = {
     id: 'PLUGIN_CWD_ESCAPE',
     label: 'stdio cwd escapes the allowed roots',
     severity: 'BREAKING',
+    section: '7.2.1',
     explanation:
       'The Agent Plugins spec allows exactly three cwd forms: a plugin-relative path beginning with ./, exactly ${PLUGIN_ROOT} or a path beginning with ${PLUGIN_ROOT}/, or exactly ${PLUGIN_DATA} or a path beginning with ${PLUGIN_DATA}/ — and the resolved path must stay inside that root. A cwd outside these forms fails containment, and conformant clients treat the server entry as invalid (spec §7.2.2).',
     after: '"cwd": "./"  // or "./sub/dir", "${PLUGIN_ROOT}", "${PLUGIN_ROOT}/sub", "${PLUGIN_DATA}", "${PLUGIN_DATA}/sub"',
@@ -576,6 +621,7 @@ export const PLUGIN_RULES: Record<PluginRuleId, PluginRuleMeta> = {
     id: 'PLUGIN_ENV_RESERVED',
     label: 'env sets a reserved PLUGIN_ROOT / PLUGIN_DATA variable',
     severity: 'BREAKING',
+    section: '9.2',
     explanation:
       'The Agent Plugins spec: "An MCP server\'s env object MUST NOT contain entries named PLUGIN_ROOT or PLUGIN_DATA. Such an entry makes that server configuration invalid." Clients supply both reserved variables themselves after applying configured overlays, so a plugin-set value is rejected, not honored.',
     after: '// remove the entry — the client provides PLUGIN_ROOT and PLUGIN_DATA itself;\n// reference them as ${PLUGIN_ROOT}/... or ${PLUGIN_DATA}/... in args, env values, and cwd.',
@@ -585,6 +631,7 @@ export const PLUGIN_RULES: Record<PluginRuleId, PluginRuleMeta> = {
     id: 'PLUGIN_REMOTE_INSECURE_URL',
     label: 'remote server url violates the spec URL rules',
     severity: 'BREAKING',
+    section: '7.2.1',
     explanation:
       'The Agent Plugins spec: "The url value MUST be an absolute HTTP or HTTPS URL and MUST NOT contain user information or a fragment. Non-loopback endpoints MUST use HTTPS." HTTP is allowed only when the host is exactly localhost or an IP literal in a loopback range (127.0.0.0/8, ::1). Conformant clients refuse to connect to a URL that breaks these rules.',
     after: '"url": "https://example.com/mcp"  // http:// only for localhost / 127.0.0.0/8 / [::1]; never user:pass@ or #fragment',
@@ -594,6 +641,7 @@ export const PLUGIN_RULES: Record<PluginRuleId, PluginRuleMeta> = {
     id: 'PLUGIN_SSE_TRANSPORT',
     label: 'declares the deprecated HTTP+SSE transport',
     severity: 'DEPRECATED',
+    section: '7.2.1',
     explanation:
       'This mcp.json entry declares type "sse" — the legacy HTTP+SSE transport. The Agent Plugins 1.0.0 schema still accepts it, but the MCP 2026-07-28 spec reclassifies HTTP+SSE as Deprecated under the feature lifecycle policy (SEP-2596, the same change mcp-vet\'s SSE_TRANSPORT_DEPRECATED source rule covers) and removes SSE stream resumability (SSE_RESUMABILITY_REMOVED). The plugin format is one protocol revision behind the protocol it packages.',
     after: '"type": "streamable-http"  // same url field; migrate the server off HTTP+SSE (see SSE_TRANSPORT_DEPRECATED)',
@@ -603,6 +651,7 @@ export const PLUGIN_RULES: Record<PluginRuleId, PluginRuleMeta> = {
     id: 'PLUGIN_SKILL_LAYOUT',
     label: 'SKILL.md outside the discoverable skills layout',
     severity: 'DEPRECATED',
+    section: '7.1',
     explanation:
       'The Agent Plugins spec: "Each immediate child directory containing a path named exactly SKILL.md that resolves to a regular file is treated as one skill. Clients MUST NOT recursively search deeper descendants for additional skills." This SKILL.md is not at skills/<name>/SKILL.md, so every conformant client silently ignores it.',
     after: 'skills/\n└── my-skill/\n    └── SKILL.md   // exactly one level below skills/',

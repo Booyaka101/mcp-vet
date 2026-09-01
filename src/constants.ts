@@ -46,6 +46,17 @@ export const AGENT_PLUGINS_PLUGIN_SCHEMA_URL =
   'https://agent-plugins.org/schemas/1.0.0/plugin.schema.json';
 export const AGENT_PLUGINS_MCP_SCHEMA_URL =
   'https://agent-plugins.org/schemas/1.0.0/mcp.schema.json';
+/**
+ * agent-plugins-spec#77 — the published plugin.schema.json rejects two
+ * manifests that §5.2 (unknown top-level fields) and §8.1 (non-object
+ * extensions) require clients to report, ignore, and keep loading. The
+ * TOLERATED envelope severity exists because of this schema/spec split.
+ */
+export const AGENT_PLUGINS_ISSUE_77_URL =
+  'https://github.com/agentplugins/agent-plugins-spec/issues/77';
+/** agent-plugins-spec#76 — the name pattern's lookahead does not compile under RE2 (Go). */
+export const AGENT_PLUGINS_ISSUE_76_URL =
+  'https://github.com/agentplugins/agent-plugins-spec/issues/76';
 
 /**
  * 2026-07-28 changes that are real but NOT reliably detectable by static token

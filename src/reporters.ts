@@ -209,6 +209,7 @@ export function toPublicFinding(f: Finding) {
     patternId: f.patternId,
     patternLabel: f.patternLabel,
     severity: f.severity,
+    section: f.section ?? null,
     confidence: f.confidence,
     explanation: f.explanation,
     docUrl: f.docUrl,
@@ -229,18 +230,25 @@ export function writeJson(result: ScanResult, outDir: string): string {
   return outPath;
 }
 
-/** (d) GitHub Actions native annotations. ::error for BREAKING/ERROR, ::warning otherwise. */
+/** (d) GitHub Actions native annotations. ::error for BREAKING/ERROR/FATAL, ::warning otherwise. */
 export function printGithubAnnotations(findings: Finding[]): void {
   for (const f of findings) {
-    const level = f.severity === 'BREAKING' || f.severity === 'ERROR' ? 'error' : 'warning';
+    const level =
+      f.severity === 'BREAKING' || f.severity === 'ERROR' || f.severity === 'FATAL'
+        ? 'error'
+        : f.severity === 'TOLERATED' || f.severity === 'INFO'
+          ? 'notice'
+          : 'warning';
     const msg = `${f.patternId} - ${f.explanation}`.replace(/\r?\n/g, ' ');
     const col = f.column ? `,col=${f.column}` : '';
     console.log(`::${level} file=${f.file},line=${f.line}${col}::${msg}`);
   }
 }
 
-function sarifLevel(sev: Severity): 'error' | 'warning' {
-  return sev === 'BREAKING' || sev === 'ERROR' ? 'error' : 'warning';
+function sarifLevel(sev: Severity): 'error' | 'warning' | 'note' {
+  if (sev === 'BREAKING' || sev === 'ERROR' || sev === 'FATAL') return 'error';
+  if (sev === 'TOLERATED' || sev === 'INFO') return 'note';
+  return 'warning';
 }
 
 /** (e) SARIF 2.1.0 for GitHub code scanning / other SARIF consumers. */
@@ -260,7 +268,13 @@ export function renderSarif(result: Pick<ScanResult, 'findings'>): string {
   });
   // Runtime-probe, plugin, and Python-SDK rules join the driver metadata only
   // when they actually fired, so static-scan SARIF keeps its stable rule shape.
-  type FiredRuleMeta = { label: string; explanation: string; docUrl: string; severity: Severity };
+  type FiredRuleMeta = {
+    label: string;
+    explanation: string;
+    docUrl: string;
+    severity: Severity;
+    section?: string;
+  };
   const pushFiredRules = (registry: Record<string, FiredRuleMeta>) => {
     const used = [
       ...new Set(result.findings.map((f) => f.patternId).filter((id) => id in registry)),
@@ -274,7 +288,7 @@ export function renderSarif(result: Pick<ScanResult, 'findings'>): string {
         fullDescription: { text: r.explanation },
         helpUri: r.docUrl,
         defaultConfiguration: { level: sarifLevel(r.severity) },
-        properties: { severity: r.severity },
+        properties: { severity: r.severity, ...(r.section && { section: r.section }) },
       });
     }
   };
@@ -306,7 +320,11 @@ export function renderSarif(result: Pick<ScanResult, 'findings'>): string {
           },
         },
       ],
-      properties: { confidence: f.confidence, severity: f.severity },
+      properties: {
+        confidence: f.confidence,
+        severity: f.severity,
+        ...(f.section && { section: f.section }),
+      },
     };
   });
 
@@ -413,10 +431,15 @@ export function reportPluginTerminal(result: PluginVetResult, opts: TerminalOpti
       console.log(c.underline(f.file));
     }
     const sev =
-      f.severity === 'BREAKING' ? c.red.bold('BREAKING') : c.yellow.bold('DEPRECATED');
+      f.severity === 'BREAKING' || f.severity === 'FATAL'
+        ? c.red.bold(f.severity)
+        : f.severity === 'INFO'
+          ? c.cyan.bold('INFO')
+          : c.yellow.bold(f.severity);
     const loc = c.cyan(`${f.file}:${f.line}${f.column ? ':' + f.column : ''}`);
+    const sec = f.section ? c.gray(`§${f.section}`) + ' ' : '';
     const conf = c.gray(`[${f.confidence}]`);
-    console.log(`${loc}  ${sev}  ${c.bold(f.patternId)} ${conf}`);
+    console.log(`${loc}  ${sev}  ${c.bold(f.patternId)} ${sec}${conf}`);
     console.log(indent(f.explanation, '    '));
     console.log(c.gray('    — before:'));
     console.log(indent(f.before, '      '));
@@ -425,9 +448,14 @@ export function reportPluginTerminal(result: PluginVetResult, opts: TerminalOpti
   }
 
   console.log('');
-  const { breaking, deprecated } = countBySeverity(findings);
-  const summary = `${findings.length} finding(s): ${breaking} BREAKING, ${deprecated} DEPRECATED`;
-  console.log(breaking > 0 ? c.red.bold(summary) : c.yellow.bold(summary));
+  const order: Severity[] = ['FATAL', 'BREAKING', 'DEPRECATED', 'TOLERATED', 'INFO'];
+  const parts = order
+    .map((s) => [s, findings.filter((f) => f.severity === s).length] as const)
+    .filter(([, n]) => n > 0)
+    .map(([s, n]) => `${n} ${s}`);
+  const summary = `${findings.length} finding(s): ${parts.join(', ')}`;
+  const failing = findings.some((f) => f.severity === 'FATAL' || f.severity === 'BREAKING');
+  console.log(failing ? c.red.bold(summary) : c.yellow.bold(summary));
   console.log(c.gray(`See https://agent-plugins.org/specification and ${SPEC_URL}`));
 }
 
