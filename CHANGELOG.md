@@ -4,6 +4,158 @@ All notable changes to `mcp-vet` are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.0]
+
+MCP TypeScript SDK v2 awareness, the mirror of 0.12.0's Python group, for the
+larger half of the ecosystem. `@modelcontextprotocol/client`,
+`@modelcontextprotocol/server`, `@modelcontextprotocol/core` and the framework
+adapters (`/node`, `/express`, `/hono`, `/fastify`) all went stable at 2.0.0 on
+2026-07-27, retiring the monolithic `@modelcontextprotocol/sdk` (last 1.x:
+1.30.0). That split renames the error hierarchy (`McpError` → `ProtocolError`),
+replaces the handler `extra` parameter with a reshaped `ctx`, swaps the
+schema-constant handler registration for method strings, removes the variadic
+`.tool()`/`.prompt()`/`.resource()` registration and the WebSocket transport,
+moves `StreamableHTTPServerTransport` into its own package under a new name,
+deletes the zod-compat helpers, moves the auth module to
+`@modelcontextprotocol/server-legacy/auth`, and raises the zod floor to
+`^4.2.0`. A range the v1 peer accepted "installs and typechecks cleanly under
+v2 and only fails at runtime". mcp-vet's TypeScript matcher table knew none of
+it, so a server that took the v2 port presented nothing it recognized and a
+clean exit read as compliant. That silent under-report is what this release
+fixes, and it adds an advisory migration surface on top.
+
+### Added
+
+- **13 `TS_SDK_V1_*` rules** at the DEPRECATED tier (warn, exit 0, never fail
+  a build): `TS_SDK_V1_MONOLITH`, `TS_SDK_V1_MCPERROR`,
+  `TS_SDK_V1_HTTP_ERROR`, `TS_SDK_V1_JSONRPC_ERROR`,
+  `TS_SDK_V1_HANDLER_EXTRA`, `TS_SDK_V1_SCHEMA_HANDLER`,
+  `TS_SDK_V1_VARIADIC_REG`, `TS_SDK_V1_WEBSOCKET`,
+  `TS_SDK_V1_NODE_HTTP_TRANSPORT`, `TS_SDK_V1_ZOD_COMPAT`,
+  `TS_SDK_V1_AUTH_MOVED`, `TS_SDK_V1_RESOURCE_REF`, `TS_SDK_V1_ZOD3`. Every
+  message quotes `docs/migration/upgrade-to-v2.md` verbatim and carries the
+  versioned permalink `ts.sdk.modelcontextprotocol.io/v2/migration/upgrade-to-v2.html`
+  (re-verified 2026-09-04). The tier stays advisory the whole way down:
+  pinning back to `@modelcontextprotocol/sdk@^1` remains valid, the guide
+  describes v1/v2 coexistence during a staged migration and ships frozen v1
+  copies under `@modelcontextprotocol/server-legacy`, and it names no
+  end-of-support date for v1.x, so no message here invents one, and a test
+  asserts as much.
+- `TS_SDK_V1_MONOLITH` names the destination per path rather than saying
+  "it moved": `types.js` → `@modelcontextprotocol/core`, `server/express` →
+  `@modelcontextprotocol/express`, `shared/*` → the client or server root
+  barrel, and so on. `TS_SDK_V1_ZOD_COMPAT` is equally specific about what
+  has a replacement. It names the two routes forward, `schemaToJson` →
+  `fromJsonSchema()` and `parseSchemaAsync` → `z.safeParseAsync()`, then
+  repeats the guide's own "have no replacement" for `getSchemaShape`,
+  `getSchemaDescription`, `isOptionalSchema` and `unwrapOptionalSchema`
+  instead of inventing four.
+- **`detectTsSdk()` in `src/sdk-detect.ts`** resolves the DECLARED family from
+  the nearest `package.json` (every dependency block) plus `package-lock.json`
+  / `pnpm-lock.yaml` / `yarn.lock`, walking up from each `.ts`/`.js` file and
+  stopping at the repository boundary so an unrelated parent manifest cannot
+  decide the gate. `@modelcontextprotocol/sdk` ^1 → v1; any of client/server/
+  core → v2; both → half-migrated. package.json decides the family because a
+  declaration is an intent; a lock answers only when package.json names no MCP
+  package, or pins a version when the declared range names no major (`*`).
+- **`--ts-sdk auto|v1|v2` and `--no-ts-sdk`** (`tsSdk` in `.mcpvetrc.json`),
+  semantics identical to `--py-sdk`. `auto` is the default: v2 activates the
+  group, v1 suppresses it and prints one informational line naming the v2
+  packages and their 2026-07-27 npm date, half-migrated activates it with a
+  note that objects must not flow across the v1/v2 boundary, and an
+  unresolvable declaration runs the rules with every finding annotated
+  "(SDK version undetermined)". `--only`/`--disable` accept the new ids, and
+  `--only` naming no TS_SDK rule turns the group off.
+- The group is gated per FILE on an actual `@modelcontextprotocol/*` import,
+  so a local class named `McpError` stays clean, and per PROJECT on the
+  declared family. Rules key on the (imported name, source module) pair, not
+  the bare name. Aliased imports (`{ McpError as Boom }`), namespace imports
+  (`import * as sdk` → `sdk.StreamableHTTPError`), `require()` and
+  `export … from` all resolve. A half-migrated file importing both families
+  reports only the v1 import. `TS_SDK_V1_ZOD3` stays quiet when the project
+  declares zod at or above `^4.2.0`, and in any file that does not import the
+  SDK.
+- **`TS_SDK_V1_MONOLITH` suppresses on the module paths
+  `SSE_TRANSPORT_DEPRECATED` already owns** (`sdk/server/sse`,
+  `sdk/client/sse`, `server-legacy/sse`), so one import never produces two
+  findings for the same fact. The list is derived from that rule's own table
+  rather than copied, so the two cannot drift.
+- Terminal reports gain the TypeScript clause in the split summary:
+  `22 spec rules, N breaking; 13 TypeScript SDK rules, M advisory`. When both
+  SDK groups run, both clauses appear on the one line. JSON, SARIF and
+  markdown carry the findings with the same shape as every other rule, and
+  fired TS_SDK rules join the SARIF driver the way probe, plugin and PY_SDK
+  rules already do.
+- The library API exports the new surface: `TS_SDK_RULES`,
+  `ALL_TS_SDK_RULE_IDS`, `TsSdkRuleId`, `TsSdkRuleMeta`, `TsSdkMode`,
+  `TsSdkStatus`, `SdkGroupStatus`, `detectTsSdk`, `TsSdkDetection`, `TsMajor`,
+  `npmRangeFloor`, `TS_V2_PACKAGE_NAMES`, and the TS SDK constants.
+- `test/ts-sdk.test.mjs` (29 tests) with fixtures under
+  `test/ts-sdk-fixtures/`: a fully v2-ported server, a fully v1 server, a
+  half-migrated file, a kitchen sink firing all 13 rules, an SSE-collision
+  file, a pnpm-lock-only project, a v2-regression server, and the negatives
+  (a local `McpError` class, a below-floor zod project with no SDK import).
+  192 tests total (2 of them regressions for bugs the review pass found).
+
+### Changed
+
+- **`schema/mcpvetrc.schema.json` is no longer stale.** Its rule-id enum
+  listed 8 of the 22 spec rules and none of the SDK groups, so a valid config
+  failed editor validation. It now lists all 47 ids and the `pySdk` / `tsSdk`
+  keys; `#/$defs/patternId` is kept as an alias of `#/$defs/ruleId` for
+  configs written against 0.13.0.
+- The PY_SDK and TS_SDK engines now share one finding writer and one gate
+  (`sdkFindingWriter` in `src/rules.ts`, `gateSdkGroup` in `src/scanner.ts`),
+  and the Python and TypeScript manifest walks share `findManifestDir`. Python
+  output is unchanged by that refactor, byte for byte.
+- TS_SDK findings de-duplicate per (line, rule) rather than per (line, column,
+  rule): `import { McpError, ErrorCode }` is one thing to fix, not two. The
+  spec rules and the PY_SDK group keep per-position de-duplication.
+- The no-`/draft/` docUrl test now walks every rule registry, not just
+  `RULES` and `RUNTIME_RULES`. It had never covered the plugin or PY_SDK
+  groups. All 47 rules pass it.
+- One pre-existing test changed. `SARIF output is valid 2.1.0 with rules and
+  results` asserted the driver holds exactly 22 rules while scanning the whole
+  fixture tree; fired TS_SDK rules now join it, so it filters the SDK-group
+  ids out before counting, the same shape as the equivalent PY_SDK assertion
+  added in 0.12.0. Its intent (the 22 spec rules keep their stable shape) is
+  unchanged. Every other test passes untouched.
+
+### Fixed
+
+- **An inline suppression naming a non-protocol rule id silently disabled
+  every rule on that line, including BREAKING ones, and flipped the exit
+  code.** `parseSuppressions` only recognized the 22 `PatternId`s, so a
+  directive like `// mcp-vet-disable-line TS_SDK_V1_MCPERROR` parsed to an
+  empty id set, and an empty set means "suppress everything here". A line
+  carrying both an advisory finding and `MCP_SESSION_ID` + `ERROR_CODE_32002`
+  reported nothing and exited 0. The directive parser now knows every rule id:
+  protocol, plugin, `PY_SDK_V1_*` and `TS_SDK_V1_*`. A narrow suppression is
+  narrow again. Present since 0.12.0 for the `PY_SDK_V1_*` ids; found while
+  reviewing this release, which makes it much easier to hit.
+- **`SSE_TRANSPORT_DEPRECATED` no longer fires on
+  `@modelcontextprotocol/server-legacy/auth`.** It matched the bare package
+  name, but that package ships two frozen v1 surfaces: the SSE transport
+  *and* the auth module `TS_SDK_V1_AUTH_MOVED` tells people to migrate TO.
+  Following mcp-vet's own advice produced a finding. The rule is scoped to
+  the `/sse` entry point; a root-barrel import that really does pull in the
+  transport still trips the ungated `SSEServerTransport` /
+  `SSEClientTransport` symbol match, and `TS_SSE_OWNED_PATHS` is now derived
+  from that one table so the two can never drift apart.
+
+### Unchanged (verified)
+
+- **`--no-ts-sdk` reproduces 0.13.0 output byte for byte.** The JSON report
+  over the whole pre-existing `test/fixtures` tree was captured before the
+  first edit and diffed against the same command after: identical, 138
+  findings, byte for byte. The `test/py-sdk-fixtures` and `test/probe-fixtures`
+  trees are identical too, with and without the flag.
+- The pre-existing protocol rules were never put behind the new gating, and a
+  regression fixture proves it: a fully v2-ported server
+  (`@modelcontextprotocol/server`) importing `@modelcontextprotocol/server-legacy/sse`,
+  a real module in v2.0.0, keeps its `SSE_TRANSPORT_DEPRECATED`,
+  `ERROR_CODE_32002` and `LOGGING_SETLEVEL_REMOVED` findings and still exits 1.
+
 ## [0.13.0]
 
 Envelope severity split: FATAL versus TOLERATED. A correctness fix to the

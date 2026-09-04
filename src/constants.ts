@@ -35,6 +35,28 @@ export const PY_SDK_RELEASES_URL = 'https://github.com/modelcontextprotocol/pyth
 export const PY_SDK_LATEST_V2 = 'v2.1.1';
 export const PY_SDK_LATEST_V2_DATE = '2026-08-25';
 /**
+ * The TypeScript SDK v1→v2 migration guide — the canonical old→new mapping
+ * every TS_SDK_V1 rule quotes (docs/migration/upgrade-to-v2.md, re-verified
+ * 2026-09-04). The URL is the published VERSIONED permalink: the /v2/ tree is
+ * frozen for the 2.x line, unlike a /draft/ one, and a test asserts no rule
+ * cites /draft/.
+ */
+export const TS_SDK_MIGRATION_URL =
+  'https://ts.sdk.modelcontextprotocol.io/v2/migration/upgrade-to-v2.html';
+/**
+ * The packages that replaced the monolithic @modelcontextprotocol/sdk, and the
+ * day they all went stable on npm (registry `time` field, re-verified
+ * 2026-09-04: every one of them 2026-07-27T23:55Z). Named in the informational
+ * line when a project still declares v1.
+ */
+export const TS_SDK_V2_PACKAGES =
+  '@modelcontextprotocol/client, @modelcontextprotocol/server and @modelcontextprotocol/core';
+export const TS_SDK_LATEST_V2 = '2.0.0';
+export const TS_SDK_V2_DATE = '2026-07-27';
+/** The v1 monolith, still published (1.30.0) and still a valid pin. */
+export const TS_SDK_V1_PACKAGE = '@modelcontextprotocol/sdk';
+
+/**
  * Agent Plugins 1.0 (GA in VS Code / Copilot CLI / the Copilot SDK and app on
  * 2026-08-12). The two canonical machine-readable schemas are vendored under
  * schemas/agent-plugins/1.0.0/ (fetched 2026-08-18) so `mcp-vet plugin`

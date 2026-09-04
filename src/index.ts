@@ -18,18 +18,35 @@
  * ```
  */
 export { scan, ScanError } from './scanner';
-export type { ScanOptions, ScanResult, PythonMode, PySdkMode, PySdkStatus } from './scanner';
+export type {
+  ScanOptions,
+  ScanResult,
+  PythonMode,
+  PySdkMode,
+  PySdkStatus,
+  TsSdkMode,
+  TsSdkStatus,
+  SdkGroupStatus,
+  SdkDeclaration,
+} from './scanner';
 
 export { applyFixes, isFixable } from './autofix';
 export type { FixResult } from './autofix';
 
 export { renderJson, renderMarkdown, renderSarif, toPublicFinding } from './reporters';
 
-export { RULES, RUNTIME_RULES, PLUGIN_RULES, PY_SDK_RULES } from './rules';
-export type { RuntimeRuleMeta, PluginRuleMeta, PySdkRuleMeta } from './rules';
+export { RULES, RUNTIME_RULES, PLUGIN_RULES, PY_SDK_RULES, TS_SDK_RULES } from './rules';
+export type { RuntimeRuleMeta, PluginRuleMeta, PySdkRuleMeta, TsSdkRuleMeta } from './rules';
 
-export { detectMcpSdk, classifySpecifier, clearSdkDetectionCache } from './sdk-detect';
-export type { SdkDetection, McpMajor } from './sdk-detect';
+export {
+  detectMcpSdk,
+  detectTsSdk,
+  classifySpecifier,
+  npmRangeFloor,
+  clearSdkDetectionCache,
+  TS_V2_PACKAGE_NAMES,
+} from './sdk-detect';
+export type { SdkDetection, McpMajor, TsSdkDetection, TsMajor } from './sdk-detect';
 
 export { vetPlugin, PluginVetError } from './inputs/plugin';
 export type { PluginVetOptions, PluginVetResult, PluginServerInfo } from './inputs/plugin';
@@ -51,6 +68,10 @@ export {
   PY_SDK_RELEASES_URL,
   PY_SDK_LATEST_V2,
   PY_SDK_LATEST_V2_DATE,
+  TS_SDK_MIGRATION_URL,
+  TS_SDK_V2_PACKAGES,
+  TS_SDK_LATEST_V2,
+  TS_SDK_V2_DATE,
   getVersion,
 } from './constants';
 
@@ -64,6 +85,7 @@ export {
   ALL_RUNTIME_RULE_IDS,
   ALL_PLUGIN_RULE_IDS,
   ALL_PY_SDK_RULE_IDS,
+  ALL_TS_SDK_RULE_IDS,
   SPEC_VERSIONS,
 } from './types';
 export type {
@@ -72,6 +94,7 @@ export type {
   RuntimeRuleId,
   PluginRuleId,
   PySdkRuleId,
+  TsSdkRuleId,
   ViolationId,
   SpecVersion,
   Severity,

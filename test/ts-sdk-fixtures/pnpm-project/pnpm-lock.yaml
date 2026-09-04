@@ -1,0 +1,23 @@
+lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+importers:
+  .:
+    dependencies:
+      zod:
+        specifier: ^4.2.0
+        version: 4.2.1
+
+packages:
+
+  '@modelcontextprotocol/core@2.0.0':
+    resolution: {integrity: sha512-0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000}
+
+  '@modelcontextprotocol/server@2.0.0':
+    resolution: {integrity: sha512-1111111111111111111111111111111111111111111111111111111111111111111111111111111111111111}
+
+  zod@4.2.1:
+    resolution: {integrity: sha512-2222222222222222222222222222222222222222222222222222222222222222222222222222222222222222}

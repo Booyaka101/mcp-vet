@@ -9,6 +9,9 @@ const INIT_STRINGS = new Set(['initialize', 'notifications/initialized']);
 // SSE-resumability option keys (SEP-2575 removal) — flagged at high confidence
 // only when passed to something transport/client shaped.
 const SSE_OPTION_KEYS = new Set(['eventStore', 'resumptionToken', 'onresumptiontoken']);
+// The variadic registration methods removed in SDK v2 (registerTool/-Prompt/
+// -Resource replace them).
+const VARIADIC_REG = new Set(['tool', 'prompt', 'resource']);
 
 function getProject(): Project {
   if (!project) {
@@ -307,14 +310,124 @@ export function analyzeTs(absPath: string, text: string): Token[] {
       }
     });
 
-    // Client-side session ownership: reads of `<transport>.sessionId` mean the
-    // client still behaves as if it owns a session against a stateless server.
+    // Import bindings, for the TS_SDK_V1 group (0.14.0). The rules key on the
+    // (imported name, source module) pair rather than the bare name, so a local
+    // class called `McpError` is not evidence of the SDK. Module specifiers are
+    // re-emitted with `importModule` — the plain string token is already there
+    // for the protocol rules, and the two never collide (findings dedupe on
+    // line|col|ruleId).
+    const namespaceBindings = new Map<string, string>();
+    const emitImportBindings = (moduleNode: Node | undefined, decl: Node) => {
+      if (!moduleNode) return;
+      let spec: string;
+      try {
+        spec = (moduleNode as any).getLiteralValue();
+      } catch {
+        return;
+      }
+      const modPos = posOf(moduleNode);
+      tokens.push({ kind: 'string', value: spec, line: modPos.line, col: modPos.col, importModule: true });
+      const imp = decl.asKind(SyntaxKind.ImportDeclaration);
+      if (!imp) return;
+      for (const named of imp.getNamedImports()) {
+        // getName() is the ORIGINAL export name, so `{ McpError as E }` still
+        // resolves — the same way the alias map above handles usage sites.
+        const nameNode = named.getNameNode();
+        const { line, col } = posOf(nameNode);
+        tokens.push({ kind: 'name', value: named.getName(), line, col, importName: true, importFrom: spec });
+      }
+      const ns = imp.getNamespaceImport();
+      if (ns) namespaceBindings.set(ns.getText(), spec);
+    };
+    for (const imp of sf.getImportDeclarations()) {
+      try {
+        emitImportBindings(imp.getModuleSpecifier(), imp);
+      } catch {
+        /* malformed import */
+      }
+    }
+    for (const exp of sf.getExportDeclarations()) {
+      try {
+        emitImportBindings(exp.getModuleSpecifier(), exp);
+      } catch {
+        /* malformed re-export */
+      }
+    }
+
+    // One pass over call expressions, for the module evidence a plain-JS server
+    // gives (`require('…')`, dynamic `import('…')` — neither produces an
+    // ImportDeclaration), the schema-constant handler registration v2 replaces
+    // with a method string, and the removed variadic `server.tool(…)`. The
+    // receiver text rides along on `callee` so the rule can score confidence.
+    for (const call of sf.getDescendantsOfKind(SyntaxKind.CallExpression)) {
+      try {
+        const expr = call.getExpression();
+        const args = call.getArguments();
+        if (expr.getKind() !== SyntaxKind.PropertyAccessExpression) {
+          const exprText = expr.getText();
+          if (exprText !== 'require' && exprText !== 'import') continue;
+          const arg = args[0];
+          const kind = arg?.getKind();
+          if (kind !== SyntaxKind.StringLiteral && kind !== SyntaxKind.NoSubstitutionTemplateLiteral) {
+            continue;
+          }
+          const { line, col } = posOf(arg);
+          tokens.push({
+            kind: 'string',
+            value: (arg as any).getLiteralValue(),
+            line,
+            col,
+            importModule: true,
+          });
+          continue;
+        }
+        const pae = expr.asKind(SyntaxKind.PropertyAccessExpression)!;
+        const method = pae.getName();
+        if (method === 'setRequestHandler' || method === 'setNotificationHandler') {
+          const first = args[0];
+          if (first && first.getKind() === SyntaxKind.Identifier) {
+            const canonical = aliases.get(first.getText()) ?? first.getText();
+            if (/(Request|Notification)Schema$/.test(canonical)) {
+              const { line, col } = posOf(first);
+              tokens.push({ kind: 'name', value: canonical, line, col, schemaHandlerArg: true });
+            }
+          }
+        } else if (VARIADIC_REG.has(method) && args.length >= 2) {
+          const { line, col } = posOf(pae.getNameNode());
+          tokens.push({
+            kind: 'name',
+            value: method,
+            line,
+            col,
+            variadicReg: true,
+            callee: pae.getExpression().getText(),
+          });
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+
+    // One pass over property accesses, for three reads: client-side session
+    // ownership (`<transport>.sessionId` means the client still behaves as if it
+    // owns a session against a stateless server), the v1 handler-context
+    // parameter (`extra.signal`), and a namespace import of an SDK module
+    // (`import * as sdk` → `sdk.McpError`).
     for (const pae of sf.getDescendantsOfKind(SyntaxKind.PropertyAccessExpression)) {
       try {
-        if (pae.getName() !== 'sessionId') continue;
-        if (!TRANSPORTISH.test(pae.getExpression().getText())) continue;
+        const name = pae.getName();
+        const objectText = pae.getExpression().getText();
         const { line, col } = posOf(pae.getNameNode());
-        tokens.push({ kind: 'name', value: 'sessionId', line, col, clientSession: true });
+        if (name === 'sessionId' && TRANSPORTISH.test(objectText)) {
+          tokens.push({ kind: 'name', value: 'sessionId', line, col, clientSession: true });
+        }
+        if (objectText === 'extra') {
+          tokens.push({ kind: 'name', value: name, line, col, extraProp: true });
+        }
+        const from = namespaceBindings.get(objectText);
+        if (from) {
+          tokens.push({ kind: 'name', value: name, line, col, importName: true, importFrom: from });
+        }
       } catch {
         /* ignore */
       }

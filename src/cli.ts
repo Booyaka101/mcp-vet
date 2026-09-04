@@ -2,10 +2,18 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { Command } from 'commander';
-import { scan, ScanError, PySdkMode } from './scanner';
+import { scan, ScanError, PySdkMode, TsSdkMode } from './scanner';
 import { IgnoreMatcher } from './ignore';
 import { loadConfig, ConfigError, Config, FailOn } from './config';
-import { ALL_PATTERN_IDS, ALL_PY_SDK_RULE_IDS, PatternId, PySdkRuleId, Confidence } from './types';
+import {
+  ALL_PATTERN_IDS,
+  ALL_PY_SDK_RULE_IDS,
+  ALL_TS_SDK_RULE_IDS,
+  PatternId,
+  PySdkRuleId,
+  TsSdkRuleId,
+  Confidence,
+} from './types';
 import { getVersion } from './constants';
 import {
   reportTerminal,
@@ -22,15 +30,19 @@ import { runPluginCli } from './plugin-cli';
 
 const CONF_VALUES: Confidence[] = ['high', 'medium', 'low'];
 const FAILON_VALUES: FailOn[] = ['breaking', 'any', 'none'];
-const PY_SDK_VALUES = ['auto', 'v1', 'v2'];
+const SDK_MODE_VALUES = ['auto', 'v1', 'v2'];
 
 function fail(msg: string): never {
   console.error(`mcp-vet: ${msg}`);
   process.exit(2);
 }
 
-type AnyRuleId = PatternId | PySdkRuleId;
-const ALL_RULE_IDS: AnyRuleId[] = [...ALL_PATTERN_IDS, ...ALL_PY_SDK_RULE_IDS];
+type AnyRuleId = PatternId | PySdkRuleId | TsSdkRuleId;
+const ALL_RULE_IDS: AnyRuleId[] = [
+  ...ALL_PATTERN_IDS,
+  ...ALL_PY_SDK_RULE_IDS,
+  ...ALL_TS_SDK_RULE_IDS,
+];
 
 function parsePatternIds(raw: string | undefined): AnyRuleId[] | undefined {
   if (!raw) return undefined;
@@ -41,7 +53,7 @@ function parsePatternIds(raw: string | undefined): AnyRuleId[] | undefined {
   const ids: AnyRuleId[] = [];
   for (const p of parts) {
     if (!ALL_RULE_IDS.includes(p as AnyRuleId)) {
-      fail(`unknown pattern id "${p}". Valid ids: ${ALL_RULE_IDS.join(', ')}`);
+      fail(`unknown rule id "${p}". Valid ids: ${ALL_RULE_IDS.join(', ')}`);
     }
     ids.push(p as AnyRuleId);
   }
@@ -127,8 +139,8 @@ function scanMain(): void {
     .option('--sarif [file]', 'write a SARIF 2.1.0 report (default file: mcp-vet.sarif)')
     .option('--out-dir <dir>', 'directory for mcp-vet-report.md and mcp-vet-results.json', process.cwd())
     .option('--no-files', 'do not write the markdown/json report files')
-    .option('--only <ids>', 'only run these pattern ids (comma/space separated)')
-    .option('--disable <ids>', 'skip these pattern ids (comma/space separated)')
+    .option('--only <ids>', 'only run these rule ids (comma/space separated)')
+    .option('--disable <ids>', 'skip these rule ids (comma/space separated)')
     .option('--fail-on <level>', `exit non-zero on: ${FAILON_VALUES.join(' | ')}`, 'breaking')
     .option('--min-confidence <level>', `report only findings at/above: ${CONF_VALUES.join(' | ')}`, 'low')
     .option(
@@ -144,10 +156,16 @@ function scanMain(): void {
     .option('--no-py-fallback', 'disable the regex fallback when no Python interpreter is found')
     .option(
       '--py-sdk <mode>',
-      `Python SDK v1→v2 migration rules: ${PY_SDK_VALUES.join(' | ')} (auto reads the declared mcp specifier)`,
+      `Python SDK v1→v2 migration rules: ${SDK_MODE_VALUES.join(' | ')} (auto reads the declared mcp specifier)`,
       'auto',
     )
     .option('--no-py-sdk', 'disable the PY_SDK_V1 rule group entirely (pre-0.12.0 output)')
+    .option(
+      '--ts-sdk <mode>',
+      `TypeScript SDK v1→v2 migration rules: ${SDK_MODE_VALUES.join(' | ')} (auto reads the declared @modelcontextprotocol packages)`,
+      'auto',
+    )
+    .option('--no-ts-sdk', 'disable the TS_SDK_V1 rule group entirely (pre-0.14.0 output)')
     .option('--config <path>', 'path to a config file (.mcpvetrc.json)')
     .option('--fix', 'auto-apply the safe mechanical fixes in place (currently: -32002 → -32602)')
     .option('--dry-run', 'with --fix: print the rewrites that would be made, without changing files')
@@ -192,6 +210,7 @@ function scanMain(): void {
     maxFileSize: string;
     pyFallback: boolean;
     pySdk: string | boolean;
+    tsSdk: string | boolean;
     config?: string;
     fix?: boolean;
     dryRun?: boolean;
@@ -242,35 +261,49 @@ function scanMain(): void {
   const isPattern = (id: AnyRuleId): id is PatternId => ALL_PATTERN_IDS.includes(id as PatternId);
   const isPySdk = (id: AnyRuleId): id is PySdkRuleId =>
     ALL_PY_SDK_RULE_IDS.includes(id as PySdkRuleId);
+  const isTsSdk = (id: AnyRuleId): id is TsSdkRuleId =>
+    ALL_TS_SDK_RULE_IDS.includes(id as TsSdkRuleId);
 
   let enabled = new Set<PatternId>(ALL_PATTERN_IDS);
   let pySdkEnabled = new Set<PySdkRuleId>(ALL_PY_SDK_RULE_IDS);
+  let tsSdkEnabled = new Set<TsSdkRuleId>(ALL_TS_SDK_RULE_IDS);
   if (only && only.length) {
     enabled = new Set(only.filter(isPattern));
     pySdkEnabled = new Set(only.filter(isPySdk));
+    tsSdkEnabled = new Set(only.filter(isTsSdk));
   }
   // `disable` always applies on top — so a CLI --disable still narrows a config `only`.
   if (disable && disable.length) {
     for (const id of disable) {
       if (isPattern(id)) enabled.delete(id);
       if (isPySdk(id)) pySdkEnabled.delete(id);
+      if (isTsSdk(id)) tsSdkEnabled.delete(id);
     }
   }
-  if (enabled.size === 0 && pySdkEnabled.size === 0) {
+  if (enabled.size === 0 && pySdkEnabled.size === 0 && tsSdkEnabled.size === 0) {
     fail('no rules enabled after applying --only/--disable.');
   }
 
-  // --py-sdk auto|v1|v2 · --no-py-sdk → false. CLI wins over config.
-  const pySdkRaw = fromCli('pySdk') ? opts.pySdk : config.pySdk ?? opts.pySdk;
-  let pySdkMode: PySdkMode;
-  if (pySdkRaw === false || pySdkRaw === 'off') pySdkMode = 'off';
-  else if (typeof pySdkRaw === 'string' && PY_SDK_VALUES.includes(pySdkRaw)) {
-    pySdkMode = pySdkRaw as PySdkMode;
-  } else {
-    fail(`invalid --py-sdk "${pySdkRaw}". Valid: ${PY_SDK_VALUES.join(', ')} (or --no-py-sdk)`);
-  }
-  // --only narrowed to spec rules alone → the group has nothing to say.
-  if (pySdkEnabled.size === 0) pySdkMode = 'off';
+  // --py-sdk / --ts-sdk auto|v1|v2 · --no-*-sdk → false. CLI wins over config.
+  // '--only' narrowed to spec rules alone leaves a group with nothing to say.
+  // PySdkMode and TsSdkMode are the same union; one parser answers for both.
+  const sdkMode = (flag: string, raw: string | boolean, empty: boolean): PySdkMode & TsSdkMode => {
+    if (raw !== false && raw !== 'off' && !(typeof raw === 'string' && SDK_MODE_VALUES.includes(raw))) {
+      fail(`invalid --${flag} "${raw}". Valid: ${SDK_MODE_VALUES.join(', ')} (or --no-${flag})`);
+    }
+    if (raw === false || raw === 'off' || empty) return 'off';
+    return raw as PySdkMode & TsSdkMode;
+  };
+  const pySdkMode: PySdkMode = sdkMode(
+    'py-sdk',
+    fromCli('pySdk') ? opts.pySdk : config.pySdk ?? opts.pySdk,
+    pySdkEnabled.size === 0,
+  );
+  const tsSdkMode: TsSdkMode = sdkMode(
+    'ts-sdk',
+    fromCli('tsSdk') ? opts.tsSdk : config.tsSdk ?? opts.tsSdk,
+    tsSdkEnabled.size === 0,
+  );
 
   const maxKbRaw = Number(opts.maxFileSize);
   if (!Number.isFinite(maxKbRaw) || maxKbRaw < 0) fail(`invalid --max-file-size "${opts.maxFileSize}".`);
@@ -314,6 +347,8 @@ function scanMain(): void {
       minConfidence,
       pySdkMode,
       pySdkEnabled,
+      tsSdkMode,
+      tsSdkEnabled,
     });
   } catch (err) {
     if (err instanceof ScanError) fail(err.message);

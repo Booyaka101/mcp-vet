@@ -6,11 +6,12 @@ import {
   Severity,
   ALL_PATTERN_IDS,
   ALL_PY_SDK_RULE_IDS,
+  ALL_TS_SDK_RULE_IDS,
   RuntimeRuleId,
   PluginRuleId,
   PySdkRuleId,
 } from './types';
-import { RULES, RUNTIME_RULES, PLUGIN_RULES, PY_SDK_RULES } from './rules';
+import { RULES, RUNTIME_RULES, PLUGIN_RULES, PY_SDK_RULES, TS_SDK_RULES } from './rules';
 import { ScanResult } from './scanner';
 import type { ProbeResult } from './probe';
 import type { PluginVetResult } from './inputs/plugin';
@@ -22,6 +23,10 @@ import {
   PY_SDK_MIGRATION_URL,
   PY_SDK_LATEST_V2,
   PY_SDK_LATEST_V2_DATE,
+  TS_SDK_MIGRATION_URL,
+  TS_SDK_V2_PACKAGES,
+  TS_SDK_LATEST_V2,
+  TS_SDK_V2_DATE,
 } from './constants';
 
 function makeChalk(color: boolean | undefined) {
@@ -43,28 +48,78 @@ function countBySeverity(findings: Finding[]) {
   return { breaking, deprecated: findings.length - breaking };
 }
 
-const isPySdkFinding = (f: Finding): boolean => f.patternId in PY_SDK_RULES;
+/** The two SDK-migration rule groups, in the order their clauses are printed. */
+const SDK_GROUPS: {
+  language: string;
+  registry: Record<string, unknown>;
+  count: number;
+  ran: (r: ScanResult) => boolean;
+}[] = [
+  {
+    language: 'Python',
+    registry: PY_SDK_RULES,
+    count: ALL_PY_SDK_RULE_IDS.length,
+    ran: (r) => r.pySdkStatus?.evaluated === true,
+  },
+  {
+    language: 'TypeScript',
+    registry: TS_SDK_RULES,
+    count: ALL_TS_SDK_RULE_IDS.length,
+    ran: (r) => r.tsSdkStatus?.evaluated === true,
+  },
+];
 
-/** "22 spec rules, 0 breaking; 12 Python SDK rules, 2 advisory" */
-function pySdkSummaryLine(findings: Finding[]): string {
-  const spec = findings.filter((f) => !isPySdkFinding(f));
-  const breaking = spec.filter((f) => f.severity === 'BREAKING').length;
-  const advisory = findings.length - spec.length;
-  return `${ALL_PATTERN_IDS.length} spec rules, ${breaking} breaking; ${ALL_PY_SDK_RULE_IDS.length} Python SDK rules, ${advisory} advisory`;
+const isSdkFinding = (f: Finding): boolean => SDK_GROUPS.some((g) => f.patternId in g.registry);
+
+/**
+ * "22 spec rules, 0 breaking; 12 Python SDK rules, 2 advisory" — one clause per
+ * group that actually ran, so a TypeScript-only scan reads
+ * "22 spec rules, 0 breaking; 13 TypeScript SDK rules, 2 advisory".
+ */
+function sdkSummaryLine(result: ScanResult): string {
+  const { findings } = result;
+  const breaking = findings.filter((f) => !isSdkFinding(f) && f.severity === 'BREAKING').length;
+  const clauses = [`${ALL_PATTERN_IDS.length} spec rules, ${breaking} breaking`];
+  for (const g of SDK_GROUPS) {
+    if (!g.ran(result)) continue;
+    const advisory = findings.filter((f) => f.patternId in g.registry).length;
+    clauses.push(`${g.count} ${g.language} SDK rules, ${advisory} advisory`);
+  }
+  return clauses.join('; ');
 }
 
-/** The extra PY_SDK_V1 report lines (group summary + v1 informational note). */
-function printPySdkStatus(result: ScanResult, c: any): void {
-  const st = result.pySdkStatus;
-  if (!st) return;
-  if (st.evaluated) {
-    console.log(c.gray(pySdkSummaryLine(result.findings)));
+/** "(mcp >=1.9,<2, pyproject.toml)" — what the v1 note quotes back. */
+function declarationSuffix(label: string, d: { specifier?: string; source?: string }): string {
+  if (!d.specifier) return '';
+  return ` (${label}${d.specifier}${d.source ? `, ${d.source}` : ''})`;
+}
+
+/** The extra SDK-group report lines (group summary + the informational notes). */
+function printSdkStatus(result: ScanResult, c: any): void {
+  const py = result.pySdkStatus;
+  const ts = result.tsSdkStatus;
+  if (!py && !ts) return;
+  if (SDK_GROUPS.some((g) => g.ran(result))) {
+    console.log(c.gray(sdkSummaryLine(result)));
   }
-  if (st.v1) {
-    const from = st.v1.specifier ? ` (mcp ${st.v1.specifier}${st.v1.source ? `, ${st.v1.source}` : ''})` : '';
+  if (py?.v1) {
     console.error(
       c.gray(
-        `note: this project declares Python SDK v1${from}. SDK ${PY_SDK_LATEST_V2} (${PY_SDK_LATEST_V2_DATE}) is available; the PY_SDK_V1 migration rules activate when the declared mcp major is 2. Preview with --py-sdk v2, or see ${PY_SDK_MIGRATION_URL}`,
+        `note: this project declares Python SDK v1${declarationSuffix('mcp ', py.v1)}. SDK ${PY_SDK_LATEST_V2} (${PY_SDK_LATEST_V2_DATE}) is available; the PY_SDK_V1 migration rules activate when the declared mcp major is 2. Preview with --py-sdk v2, or see ${PY_SDK_MIGRATION_URL}`,
+      ),
+    );
+  }
+  if (ts?.v1) {
+    console.error(
+      c.gray(
+        `note: this project declares TypeScript SDK v1${declarationSuffix('', ts.v1)}. ${TS_SDK_V2_PACKAGES} ${TS_SDK_LATEST_V2} shipped ${TS_SDK_V2_DATE}; the TS_SDK_V1 migration rules activate when the project declares one of them. Preview with --ts-sdk v2, or see ${TS_SDK_MIGRATION_URL}`,
+      ),
+    );
+  }
+  if (ts?.half) {
+    console.error(
+      c.gray(
+        `note: this project declares BOTH TypeScript SDK families${declarationSuffix('', ts.half)} — a staged migration. The TS_SDK_V1 rules run; objects must not flow between v1-imported and v2-imported code.`,
       ),
     );
   }
@@ -103,7 +158,7 @@ export function reportTerminal(result: ScanResult, opts: TerminalOptions = {}): 
       c.green('✔ mcp-vet: no matching 2026-07-28 breaking or deprecated patterns found') +
         c.gray(` — ${result.filesScanned} file(s) scanned${suffix}`),
     );
-    printPySdkStatus(result, c);
+    printSdkStatus(result, c);
     printManualReview(c);
     return;
   }
@@ -133,7 +188,7 @@ export function reportTerminal(result: ScanResult, opts: TerminalOptions = {}): 
   const suppressed =
     result.suppressedCount > 0 ? c.gray(` (${result.suppressedCount} suppressed)`) : '';
   console.log((breaking > 0 ? c.red.bold(summary) : c.yellow.bold(summary)) + suppressed);
-  printPySdkStatus(result, c);
+  printSdkStatus(result, c);
   console.log(c.gray(`See ${SPEC_URL}`));
   printManualReview(c);
 }
@@ -295,6 +350,7 @@ export function renderSarif(result: Pick<ScanResult, 'findings'>): string {
   pushFiredRules(RUNTIME_RULES);
   pushFiredRules(PLUGIN_RULES);
   pushFiredRules(PY_SDK_RULES);
+  pushFiredRules(TS_SDK_RULES);
 
   const results = result.findings.map((f) => {
     // Prefer a cwd-relative posix uri; if the file lives outside cwd (relative

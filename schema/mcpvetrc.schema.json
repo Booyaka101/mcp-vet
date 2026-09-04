@@ -17,13 +17,13 @@
     },
     "only": {
       "type": "array",
-      "description": "Run only these pattern ids.",
-      "items": { "$ref": "#/$defs/patternId" }
+      "description": "Run only these rule ids.",
+      "items": { "$ref": "#/$defs/ruleId" }
     },
     "disable": {
       "type": "array",
-      "description": "Skip these pattern ids.",
-      "items": { "$ref": "#/$defs/patternId" }
+      "description": "Skip these rule ids.",
+      "items": { "$ref": "#/$defs/ruleId" }
     },
     "failOn": {
       "description": "Which findings cause a non-zero exit.",
@@ -45,21 +45,74 @@
       "type": "boolean",
       "description": "Use the regex fallback when no Python interpreter is available.",
       "default": true
+    },
+    "pySdk": {
+      "description": "PY_SDK_V1_* group gate. 'auto' reads the declared mcp specifier; 'v1' suppresses the group; 'v2' forces it on; 'off' is --no-py-sdk.",
+      "enum": ["auto", "v1", "v2", "off"],
+      "default": "auto"
+    },
+    "tsSdk": {
+      "description": "TS_SDK_V1_* group gate. 'auto' reads the declared @modelcontextprotocol packages; 'v1' suppresses the group; 'v2' forces it on; 'off' is --no-ts-sdk.",
+      "enum": ["auto", "v1", "v2", "off"],
+      "default": "auto"
     }
   },
   "$defs": {
-    "patternId": {
+    "ruleId": {
       "type": "string",
       "enum": [
         "MCP_SESSION_ID",
         "INITIALIZE_HANDLER",
         "ERROR_CODE_32002",
+        "ERROR_CODE_RENUMBERED",
         "TASKS_LEGACY",
         "TASKS_LIST_REMOVED",
+        "TASKS_RESULT_REMOVED",
+        "PING_REMOVED",
+        "RESOURCE_SUBSCRIBE_REMOVED",
+        "ROOTS_LIST_CHANGED_REMOVED",
+        "LOGGING_SETLEVEL_REMOVED",
+        "SSE_RESUMABILITY_REMOVED",
+        "ELICITATION_COMPLETE_REMOVED",
         "ROOTS_CAP",
         "SAMPLING_CAP",
-        "LOGGING_CAP"
+        "LOGGING_CAP",
+        "INCLUDE_CONTEXT_VALUES",
+        "OAUTH_DCR",
+        "AUTH_ISS_UNVALIDATED",
+        "AUTH_DCR_NO_APPLICATION_TYPE",
+        "AUTH_CREDENTIALS_NOT_ISSUER_KEYED",
+        "SSE_TRANSPORT_DEPRECATED",
+        "PY_SDK_V1_FASTMCP",
+        "PY_SDK_V1_MCPERROR",
+        "PY_SDK_V1_CAMEL_FIELDS",
+        "PY_SDK_V1_STREAMABLEHTTP_CLIENT",
+        "PY_SDK_V1_WEBSOCKET",
+        "PY_SDK_V1_GET_CONTEXT",
+        "PY_SDK_V1_TIMEDELTA",
+        "PY_SDK_V1_ENV",
+        "PY_SDK_V1_OAUTH",
+        "PY_SDK_V1_CACHE_FALSE",
+        "PY_SDK_V1_FILERESOURCE",
+        "PY_SDK_V1_HTTPX",
+        "TS_SDK_V1_MONOLITH",
+        "TS_SDK_V1_MCPERROR",
+        "TS_SDK_V1_HTTP_ERROR",
+        "TS_SDK_V1_JSONRPC_ERROR",
+        "TS_SDK_V1_HANDLER_EXTRA",
+        "TS_SDK_V1_SCHEMA_HANDLER",
+        "TS_SDK_V1_VARIADIC_REG",
+        "TS_SDK_V1_WEBSOCKET",
+        "TS_SDK_V1_NODE_HTTP_TRANSPORT",
+        "TS_SDK_V1_ZOD_COMPAT",
+        "TS_SDK_V1_AUTH_MOVED",
+        "TS_SDK_V1_RESOURCE_REF",
+        "TS_SDK_V1_ZOD3"
       ]
+    },
+    "patternId": {
+      "$comment": "Kept for configs written against 0.13.0 and earlier, which referenced #/$defs/patternId.",
+      "$ref": "#/$defs/ruleId"
     }
   }
 }

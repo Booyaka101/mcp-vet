@@ -1,13 +1,22 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { Finding, Token, PatternId, PySdkRuleId, ALL_PY_SDK_RULE_IDS, Confidence } from './types';
-import { applyRules, applyPySdkRules } from './rules';
+import {
+  Finding,
+  Token,
+  PatternId,
+  PySdkRuleId,
+  TsSdkRuleId,
+  ALL_PY_SDK_RULE_IDS,
+  ALL_TS_SDK_RULE_IDS,
+  Confidence,
+} from './types';
+import { applyRules, applyPySdkRules, applyTsSdkRules } from './rules';
 import { analyzeTs } from './ts-analyzer';
 import { analyzePyBatch, pythonAvailable } from './py-analyzer';
 import { regexFallbackTokens } from './py-fallback';
 import { parseSuppressions } from './suppress';
 import { IgnoreMatcher } from './ignore';
-import { detectMcpSdk, SdkDetection } from './sdk-detect';
+import { detectMcpSdk, detectTsSdk, SdkDetection, TsSdkDetection } from './sdk-detect';
 
 const SKIP_DIRS = new Set(['node_modules', '.git', '__pycache__', 'dist', 'build']);
 const TS_EXT = new Set(['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs']);
@@ -16,6 +25,7 @@ const PY_EXT = new Set(['.py']);
 const CONF_RANK: Record<Confidence, number> = { low: 1, medium: 2, high: 3 };
 
 export type PySdkMode = 'auto' | 'v1' | 'v2' | 'off';
+export type TsSdkMode = 'auto' | 'v1' | 'v2' | 'off';
 
 export interface ScanOptions {
   enabled: Set<PatternId>;
@@ -33,19 +43,66 @@ export interface ScanOptions {
   pySdkMode?: PySdkMode;
   /** the PY_SDK_V1 rules to evaluate; defaults to all of them */
   pySdkEnabled?: Set<PySdkRuleId>;
+  /**
+   * Gate for the TS_SDK_V1 rule group (0.14.0), the mirror of `pySdkMode`.
+   * 'auto' resolves the declared MCP TypeScript SDK family per file from the
+   * nearest package.json / package-lock.json / pnpm-lock.yaml / yarn.lock;
+   * 'v1'/'v2' force it; 'off' (the API default, and `--no-ts-sdk`) reproduces
+   * pre-0.14.0 output exactly.
+   */
+  tsSdkMode?: TsSdkMode;
+  /** the TS_SDK_V1 rules to evaluate; defaults to all of them */
+  tsSdkEnabled?: Set<TsSdkRuleId>;
 }
 
 export type PythonMode = 'ast' | 'regex' | 'none' | 'n/a';
 
-/** How the PY_SDK_V1 group resolved this scan — drives the extra report lines. */
-export interface PySdkStatus {
-  mode: Exclude<PySdkMode, 'off'>;
-  /** at least one Python file was evaluated against the group */
+/** Where a declaration was read from, quoted in the informational report lines. */
+export interface SdkDeclaration {
+  specifier?: string;
+  source?: string;
+}
+
+/** How an SDK migration group resolved this scan — drives the extra report lines. */
+export interface SdkGroupStatus {
+  mode: 'auto' | 'v1' | 'v2';
+  /** at least one file was evaluated against the group */
   evaluated: boolean;
-  /** set when at least one file was suppressed because mcp resolves to v1 */
-  v1?: { specifier?: string; source?: string };
-  /** true when at least one file ran with an undetermined mcp major */
+  /** set when at least one file was suppressed because the project declares v1 */
+  v1?: SdkDeclaration;
+  /** true when at least one file ran with an undetermined declared major */
   undetermined: boolean;
+}
+
+export type PySdkStatus = SdkGroupStatus;
+
+export interface TsSdkStatus extends SdkGroupStatus {
+  /** set when at least one project declares BOTH the v1 monolith and a v2 package */
+  half?: SdkDeclaration;
+}
+
+/**
+ * The gate both SDK groups share: a project declaring v1 suppresses the group
+ * (and gets one informational line instead), v2 runs it clean, and anything
+ * unresolved runs it with every finding annotated. Returns null when the file
+ * is suppressed.
+ */
+function gateSdkGroup(
+  status: SdkGroupStatus,
+  mode: 'auto' | 'v1' | 'v2',
+  detected: string,
+  declaration: SdkDeclaration,
+): { undetermined: boolean } | null {
+  const resolved = mode === 'auto' ? detected : mode;
+  if (resolved === 'v1') {
+    status.v1 = status.v1 ?? declaration;
+    return null;
+  }
+  status.evaluated = true;
+  // 'half' is a staged migration: determined, and exactly what the group is for.
+  const undetermined = resolved !== 'v2' && resolved !== 'half';
+  if (undetermined) status.undetermined = true;
+  return { undetermined };
 }
 
 export interface ScanResult {
@@ -58,6 +115,8 @@ export interface ScanResult {
   roots: string[];
   /** present only when the PY_SDK_V1 group was on and Python files were found */
   pySdkStatus?: PySdkStatus;
+  /** present only when the TS_SDK_V1 group was on and TS/JS files were found */
+  tsSdkStatus?: TsSdkStatus;
 }
 
 export class ScanError extends Error {}
@@ -201,29 +260,54 @@ export function scan(roots: string[], opts: ScanOptions): ScanResult {
   const emitPySdkForFile = (f: ScanFile, lines: string[], tokens: Token[], source: Finding['source']) => {
     if (!pySdkStatus || pySdkEnabled.size === 0) return;
     const detection: SdkDetection = detectMcpSdk(path.dirname(f.abs));
-    const resolved = pySdkMode === 'auto' ? detection.major : pySdkMode;
-    if (resolved === 'v1') {
-      pySdkStatus.v1 = pySdkStatus.v1 ?? { specifier: detection.specifier, source: detection.source };
-      return;
-    }
-    pySdkStatus.evaluated = true;
-    const undetermined = resolved !== 'v2';
-    if (undetermined) pySdkStatus.undetermined = true;
+    const gate = gateSdkGroup(pySdkStatus, pySdkMode as 'auto' | 'v1' | 'v2', detection.major, {
+      specifier: detection.specifier,
+      source: detection.source,
+    });
+    if (!gate) return;
     pushFindings(
       lines,
       applyPySdkRules(f.rel, lines, tokens, {
         enabled: pySdkEnabled,
         absPath: f.abs,
         source: source!,
-        undetermined,
+        undetermined: gate.undetermined,
         httpxDeclared: detection.httpxDeclared,
       }),
     );
   };
 
+  // --- TS_SDK_V1 group (0.14.0) — TypeScript/JavaScript files only, gated on
+  // the declared MCP SDK family. Like the Python group, the pre-existing
+  // protocol rules are NEVER gated by it.
+  const tsSdkMode: TsSdkMode = opts.tsSdkMode ?? 'off';
+  const tsSdkEnabled = opts.tsSdkEnabled ?? new Set<TsSdkRuleId>(ALL_TS_SDK_RULE_IDS);
+  const tsSdkStatus: TsSdkStatus | undefined =
+    tsSdkMode === 'off' ? undefined : { mode: tsSdkMode, evaluated: false, undetermined: false };
+
+  const emitTsSdkForFile = (f: ScanFile, lines: string[], tokens: Token[]) => {
+    if (!tsSdkStatus || tsSdkEnabled.size === 0) return;
+    const detection: TsSdkDetection = detectTsSdk(path.dirname(f.abs));
+    const declaration = { specifier: detection.specifier, source: detection.source };
+    const gate = gateSdkGroup(tsSdkStatus, tsSdkMode as 'auto' | 'v1' | 'v2', detection.major, declaration);
+    if (!gate) return;
+    if (detection.major === 'half') tsSdkStatus.half = tsSdkStatus.half ?? declaration;
+    pushFindings(
+      lines,
+      applyTsSdkRules(f.rel, lines, tokens, {
+        enabled: tsSdkEnabled,
+        absPath: f.abs,
+        source: 'ts-morph',
+        undetermined: gate.undetermined,
+        zodBelowFloor: detection.zodBelowFloor,
+        zodSpecifier: detection.zodSpecifier,
+      }),
+    );
+  };
+
   // TypeScript / JavaScript
-  for (const f of files) {
-    if (f.lang !== 'ts') continue;
+  const tsFiles = files.filter((f) => f.lang === 'ts');
+  for (const f of tsFiles) {
     const text = readText(f);
     if (text === null) continue;
     const lines = text.split(/\r?\n/);
@@ -234,6 +318,7 @@ export function scan(roots: string[], opts: ScanOptions): ScanResult {
       tokens = [];
     }
     emitForFile(f, lines, tokens, 'ts-morph');
+    emitTsSdkForFile(f, lines, tokens);
   }
 
   // Python
@@ -291,6 +376,10 @@ export function scan(roots: string[], opts: ScanOptions): ScanResult {
   // no Python files means the group is silently skipped.
   if (pySdkStatus && pyFiles.length > 0 && pythonMode !== 'none') {
     result.pySdkStatus = pySdkStatus;
+  }
+  // Same rule for TS: no TypeScript/JavaScript files means no group to report.
+  if (tsSdkStatus && tsFiles.length > 0) {
+    result.tsSdkStatus = tsSdkStatus;
   }
   return result;
 }
