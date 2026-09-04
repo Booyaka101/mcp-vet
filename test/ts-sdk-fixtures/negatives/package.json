@@ -1,0 +1,9 @@
+{
+  "name": "ts-sdk-negatives",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "@modelcontextprotocol/server": "^2.0.0",
+    "zod": "^3.25.0"
+  }
+}

@@ -5,7 +5,7 @@
 [![node](https://img.shields.io/node/v/@booyaka/mcp-vet.svg)](https://nodejs.org)
 [![license: MIT](https://img.shields.io/npm/l/@booyaka/mcp-vet.svg)](./LICENSE)
 
-**On July 28, 2026 the Model Context Protocol ships its `2026-07-28` specification as final** — and it removes several things that today's MCP servers rely on. `mcp-vet` is a zero-config CLI that scans your MCP server source (TypeScript, JavaScript, and Python) for the exact patterns that will break client interop on that date, and tells you what to change. Since 0.11.0 it also vets [Agent Plugins 1.0 packages](#vet-an-agent-plugins-10-package-mcp-vet-plugin), the plugin format that went GA in VS Code and GitHub Copilot on 2026-08-12 and ships MCP servers via `mcp.json`.
+**On July 28, 2026 the Model Context Protocol ships its `2026-07-28` specification as final** — and it removes several things that today's MCP servers rely on. `mcp-vet` is a zero-config CLI that scans your MCP server source (TypeScript, JavaScript, and Python) for the exact patterns that will break client interop on that date, and tells you what to change. Since 0.11.0 it also vets [Agent Plugins 1.0 packages](#vet-an-agent-plugins-10-package-mcp-vet-plugin), the plugin format that went GA in VS Code and GitHub Copilot on 2026-08-12 and ships MCP servers via `mcp.json`. On top of the 22 protocol rules it carries two advisory SDK-migration groups: [`PY_SDK_V1_*`](#-python-sdk-v1-vs-v2-py_sdk_v1_-added-in-0120) for the Python SDK v1→v2 port and [`TS_SDK_V1_*`](#-typescript-sdk-v1-vs-v2-ts_sdk_v1_-added-in-0140) for the TypeScript one.
 
 - Final Key Changes list: <https://modelcontextprotocol.io/specification/2026-07-28/changelog>
 - Deprecated-features registry: <https://modelcontextprotocol.io/specification/2026-07-28/deprecated>
@@ -166,6 +166,106 @@ per file on an actual `mcp` import, so a local class named `FastMCP` in a
 non-MCP file stays clean, and it never gates the 22 protocol rules. A fully
 v2-ported server importing `mcp.server.sse`, still a real module in v2.1.1,
 keeps its SSE findings, which is exactly the under-report 0.12.0 fixes.
+
+### 🟦 TypeScript SDK v1 vs v2 (`TS_SDK_V1_*`, added in 0.14.0)
+
+The monolithic `@modelcontextprotocol/sdk` was retired on **2026-07-27**, when
+`@modelcontextprotocol/client`, `@modelcontextprotocol/server`,
+`@modelcontextprotocol/core` and the framework adapters (`/node`, `/express`,
+`/hono`, `/fastify`) all went stable at 2.0.0. These 13 rules fire on v1 SDK
+vocabulary in a project whose **declared** dependencies resolve to that split.
+Like the Python group they are SDK-level, not protocol-level, and all warn at
+exit 0. Pinning back to `@modelcontextprotocol/sdk@^1` remains valid, the guide
+describes v1/v2 coexistence during a staged migration, and it sets no
+end-of-support date for v1.x, so neither does any message here. Every message
+quotes
+[docs/migration/upgrade-to-v2.md](https://ts.sdk.modelcontextprotocol.io/v2/migration/upgrade-to-v2.html).
+
+| ID | Fires on (in a file that imports `@modelcontextprotocol/*`) |
+| --- | --- |
+| `TS_SDK_V1_MONOLITH` | any `@modelcontextprotocol/sdk/...` import, with the destination named per path (`types.js` → `@modelcontextprotocol/core`, `server/express` → `@modelcontextprotocol/express`, …). Suppressed on the SSE paths `SSE_TRANSPORT_DEPRECATED` already owns |
+| `TS_SDK_V1_MCPERROR` | `McpError` → `ProtocolError`; `ErrorCode` → `ProtocolErrorCode`; `ErrorCode.RequestTimeout` / `.ConnectionClosed` → `SdkErrorCode` |
+| `TS_SDK_V1_HTTP_ERROR` | `StreamableHTTPError` → `SdkHttpError` |
+| `TS_SDK_V1_JSONRPC_ERROR` | `JSONRPCError` → `JSONRPCErrorResponse` |
+| `TS_SDK_V1_HANDLER_EXTRA` | `RequestHandlerExtra` and the `extra.*` reads: `extra.signal` → `ctx.mcpReq.signal`, `extra.requestId` → `ctx.mcpReq.id`, `extra.sendRequest` → `ctx.mcpReq.send`, `extra.requestInfo` → `ctx.http?.req`, and the rest of the table. `ctx.http` is undefined on stdio |
+| `TS_SDK_V1_SCHEMA_HANDLER` | `setRequestHandler(CallToolRequestSchema, …)` → `setRequestHandler('tools/call', …)`; custom methods take the 3-argument form |
+| `TS_SDK_V1_VARIADIC_REG` | `server.tool(` / `.prompt(` / `.resource(` → `registerTool` / `registerPrompt` / `registerResource` |
+| `TS_SDK_V1_WEBSOCKET` | `WebSocketClientTransport`, or the `sdk/client/websocket` module. Removed, because WebSocket is not a spec transport |
+| `TS_SDK_V1_NODE_HTTP_TRANSPORT` | `StreamableHTTPServerTransport` → `NodeStreamableHTTPServerTransport` from `@modelcontextprotocol/node` (or `WebStandardStreamableHTTPServerTransport` on Workers/Deno/Bun) |
+| `TS_SDK_V1_ZOD_COMPAT` | `server/zod-compat.js`, `server/zod-json-schema-compat.js`, and the removed helpers. Only `schemaToJson` (→ `fromJsonSchema()`) and `parseSchemaAsync` (→ `z.safeParseAsync()`) have a route forward; the guide says `getSchemaShape`, `getSchemaDescription`, `isOptionalSchema` and `unwrapOptionalSchema` have none |
+| `TS_SDK_V1_AUTH_MOVED` | `@modelcontextprotocol/sdk/server/auth/**` → `@modelcontextprotocol/server-legacy/auth` (frozen v1 copy), `@modelcontextprotocol/express`, or `@modelcontextprotocol/server` |
+| `TS_SDK_V1_RESOURCE_REF` | `ResourceReference` / `ResourceReferenceSchema` → `ResourceTemplateReference` / `…Schema`; the `ResourceTemplate` type from `types.js` → `ResourceTemplateType` |
+| `TS_SDK_V1_ZOD3` | a `zod` import in a project whose declared zod range admits below `^4.2.0`. v1's peer was `^3.25 \|\| ^4.0`, which "installs and typechecks cleanly under v2 and only fails at runtime" |
+
+**Gating (`--ts-sdk auto`, the default).** The declared family is read from the
+nearest `package.json` (any dependency block) plus `package-lock.json` /
+`pnpm-lock.yaml` / `yarn.lock`, walking up from each `.ts`/`.js` file and
+stopping at the repository boundary, so an unrelated parent manifest can never
+decide the gate:
+
+- declares any of **client / server / core**: the group is active;
+- declares **`@modelcontextprotocol/sdk` ^1** and nothing else: the group is
+  suppressed and one informational line names the v2 packages and their
+  2026-07-27 npm date (preview with `--ts-sdk v2`);
+- declares **both**: a staged migration. The group runs, and a note points out
+  that objects must not flow between v1-imported and v2-imported code;
+- **unresolvable** (no manifest, no MCP entry, or a range like `*` that names
+  no major): active, with every finding annotated
+  *"(SDK version undetermined)"*.
+
+`--ts-sdk v1|v2` forces a side; `--no-ts-sdk` removes the group entirely and
+reproduces pre-0.14.0 output byte for byte. Like the Python group it is
+additionally gated per file on an actual `@modelcontextprotocol/*` import, so a
+local class named `McpError` stays clean, and it never gates the 22 protocol
+rules. Aliased (`import { McpError as Boom }`), namespace (`import * as sdk`),
+`require()` and `export … from` forms all resolve.
+
+#### Worked example
+
+A one-line `server.ts` in a project whose `package.json` declares
+`@modelcontextprotocol/server: "^2.0.0"`:
+
+```ts
+import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
+
+export function badParams(): never {
+  throw new McpError(ErrorCode.InvalidParams, 'unknown resource');
+}
+```
+
+```console
+$ mcp-vet server.ts
+
+server.ts
+server.ts:4:10  DEPRECATED  TS_SDK_V1_MCPERROR [high]
+    The migration guide renames the error surface: McpError → ProtocolError; ErrorCode → ProtocolErrorCode. …
+    — before:
+      4: import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
+    + after:
+      import { ProtocolError, ProtocolErrorCode, SdkErrorCode } from '@modelcontextprotocol/core';
+
+      throw new ProtocolError(ProtocolErrorCode.InvalidParams, "unknown resource");
+server.ts:4:37  DEPRECATED  TS_SDK_V1_MONOLITH [high]
+    The migration guide splits the single `@modelcontextprotocol/sdk` package into … types.js schemas moved to @modelcontextprotocol/core.
+    — before:
+      4: import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
+    + after:
+      // v2 (Node 20+): npx @modelcontextprotocol/codemod@latest v1-to-v2 .
+      import { MCPServer } from '@modelcontextprotocol/server';
+      import { CallToolResultSchema } from '@modelcontextprotocol/core';
+      import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
+
+2 finding(s): 0 BREAKING, 2 DEPRECATED
+22 spec rules, 0 breaking; 13 TypeScript SDK rules, 2 advisory
+
+$ echo $?
+0
+```
+
+One import line, two things to fix, and the build still passes. That is what
+the advisory tier means. The whole port is `npx @modelcontextprotocol/codemod@latest
+v1-to-v2 .`; these rules tell you whether you still need to run it, and what the
+codemod left behind.
 
 ### Confidence
 
@@ -678,8 +778,8 @@ Globs `**/*.{ts,tsx,mts,cts,js,jsx,mjs,cjs}` and `**/*.py`, skipping `node_modul
 | `--sarif [file]` | write a SARIF 2.1.0 report (default `mcp-vet.sarif`) for GitHub code scanning |
 | `--out-dir <dir>` | where to write `mcp-vet-report.md` / `mcp-vet-results.json` (default: cwd) |
 | `--no-files` | don't write the markdown/json report files |
-| `--only <ids>` | only run these pattern ids (comma/space separated) |
-| `--disable <ids>` | skip these pattern ids |
+| `--only <ids>` | only run these rule ids, comma/space separated (spec, `PY_SDK_V1_*` or `TS_SDK_V1_*`) |
+| `--disable <ids>` | skip these rule ids |
 | `--fail-on <level>` | non-zero exit on `breaking` (default), `any`, or `none` |
 | `--fix` | auto-apply the safe mechanical fixes in place (currently `-32002` → `-32602`) |
 | `--dry-run` | with `--fix`: print the rewrites that would be made, without changing files |
@@ -690,6 +790,8 @@ Globs `**/*.{ts,tsx,mts,cts,js,jsx,mjs,cjs}` and `**/*.py`, skipping `node_modul
 | `--no-py-fallback` | disable the regex fallback used when no Python interpreter is found |
 | `--py-sdk <mode>` | Python SDK v1→v2 migration rules: `auto` (default; reads the declared `mcp` specifier), `v1`, or `v2` |
 | `--no-py-sdk` | disable the `PY_SDK_V1_*` rule group entirely (pre-0.12.0 output) |
+| `--ts-sdk <mode>` | TypeScript SDK v1→v2 migration rules: `auto` (default; reads the declared `@modelcontextprotocol` packages), `v1`, or `v2` |
+| `--no-ts-sdk` | disable the `TS_SDK_V1_*` rule group entirely (pre-0.14.0 output) |
 | `--config <path>` | path to a config file (see below) |
 | `--color` / `--no-color` | force or disable colored output |
 | `--quiet` | suppress the human-readable terminal report |
@@ -709,7 +811,7 @@ const y = 'Mcp-Session-Id';
 - `mcp-vet-disable-next-line [IDS]` — suppress on the following line.
 - `mcp-vet-disable-file` — suppress the whole file.
 
-Omitting the pattern ids suppresses **all** rules on that line/file; listing ids (e.g. `ERROR_CODE_32002`) suppresses only those.
+Omitting the ids suppresses **all** rules on that line/file; listing ids (e.g. `ERROR_CODE_32002`) suppresses only those. Any rule id works, including the `PY_SDK_V1_*` and `TS_SDK_V1_*` groups. An id the parser does not recognize is ignored, so a typo falls back to suppressing everything on the line — check `mcp-vet --only <id>` if a suppression is wider than you meant.
 
 ### Config file
 
@@ -722,9 +824,16 @@ Drop a `.mcpvetrc.json` (or `mcp-vet.config.json`) in your project root; CLI fla
   "failOn": "breaking",
   "minConfidence": "medium",
   "maxFileSizeKb": 2048,
-  "pythonFallback": true
+  "pythonFallback": true,
+  "pySdk": "auto",
+  "tsSdk": "auto"
 }
 ```
+
+`only` / `disable` accept any rule id, including the `PY_SDK_V1_*` and
+`TS_SDK_V1_*` groups. A JSON Schema for the file ships as
+[`schema/mcpvetrc.schema.json`](schema/mcpvetrc.schema.json) — point `$schema`
+at it for editor autocomplete.
 
 You can also list ignore globs one-per-line in a `.mcpvetignore` file.
 
@@ -811,7 +920,7 @@ Some linters let you "grandfather" existing findings so CI stays green. `mcp-vet
 
 - **TypeScript / JavaScript** — parsed with [`ts-morph`](https://ts-morph.com); the analyzer walks the AST and emits normalized tokens (string literals, signed numeric literals, identifiers, object keys) annotated with structural capability context and registration context.
 - **Python** — a bundled script (`dist/python/mcp_ast_scan.py`) runs `ast.parse` + a context-tracking walk in a subprocess (chunked for large repos) and emits the same token shape (with character-accurate columns). When no interpreter exists, a regex fallback covers the deterministic rules.
-- A single rule engine applies all 22 rules to those tokens, so TS and Python behave identically. Findings are de-duplicated per (line, column, rule) and can be suppressed inline.
+- A single rule engine applies all 22 protocol rules to those tokens, so TS and Python behave identically. Findings are de-duplicated per (line, column, rule) and can be suppressed inline. The two SDK-migration groups run alongside it, gated on the declared SDK version, and de-duplicate per (line, rule) — one import list is one thing to fix.
 
 It matches the ways real servers are actually written, not just raw method strings:
 
@@ -838,6 +947,10 @@ These are locked into the test suite as `test/fixtures/adversarial/missed/` — 
 - **Computed credential-store keys** — `store.set(key_for(server_url), creds)` is skipped rather than guessed at, even when the computed key is in fact a server URL (`missed/computed_cred_key.py`).
 - **Dynamic transport selection** — `mcp.run({ transport })` where the name comes from a variable or environment never puts the literal `'sse'` under the `transport` key, so `SSE_TRANSPORT_DEPRECATED` cannot fire (`missed/dynamic-transport.ts`). Template-literal SSE frames (`` res.write(`event: endpoint…${id}`) ``) are likewise invisible to the string tokenizer — write the frame name as a plain literal or catch it at runtime with `probe --spec` (`legacy-sse-transport`).
 - The **regex fallback** (no Python interpreter) covers only the deterministic rules at reduced precision (the auth-hardening rules need the AST analyzers); install Python for full `.py` fidelity.
+- **`TS_SDK_V1_HANDLER_EXTRA` reads a parameter literally named `extra`** — the guide's own name, and what the codemod looks for. A handler that calls it `_extra` or `e` is only caught through its `RequestHandlerExtra` type import, if it has one.
+- **`TS_SDK_V1_ZOD3` anchors on a `zod` import.** A project on a below-floor zod range whose SDK files never import zod directly gets no finding, the same shape as `PY_SDK_V1_HTTPX`. Check the declared range yourself if no file imports zod.
+- **`TS_SDK_V1_VARIADIC_REG` matches `x.tool(` / `.prompt(` / `.resource(` with two or more arguments** in a file that imports the SDK. An unrelated `agent.tool(a, b)` in such a file reports at *medium*; a receiver whose name mentions `server` or `mcp` reports at *high*. Filter with `--min-confidence high` if a codebase mixes agent frameworks.
+- **A lockfile that names an MCP package only transitively decides the gate** when `package.json` names none. That is deliberate — a file importing the SDK really is using whatever version resolved — but `--ts-sdk` overrides it.
 
 This is the recall boundary of static analysis: it proves known patterns are *absent*, not that the server *speaks the new wire contract*. Cover the difference with the [runtime conformance fixtures](#runtime-conformance-fixtures).
 
@@ -864,7 +977,29 @@ for (const f of result.findings) {
 applyFixes(result.findings);
 ```
 
-Also exported: `renderJson` / `renderMarkdown` / `renderSarif`, `RULES`, and the `Finding` / `PatternId` / `Severity` / `Confidence` types.
+The SDK-migration groups are opt-in from the library (the CLI turns them on):
+
+```ts
+import { scan, ALL_PATTERN_IDS, ALL_TS_SDK_RULE_IDS, IgnoreMatcher } from '@booyaka/mcp-vet';
+
+const result = scan(['./src'], {
+  enabled: new Set(ALL_PATTERN_IDS),
+  ignore: new IgnoreMatcher([]),
+  maxFileSizeKb: 0,
+  pythonFallback: true,
+  minConfidence: 'low',
+  tsSdkMode: 'auto', // reads the declared @modelcontextprotocol packages
+  tsSdkEnabled: new Set(ALL_TS_SDK_RULE_IDS),
+});
+console.log(result.tsSdkStatus); // { mode, evaluated, v1?, half?, undetermined }
+```
+
+Also exported: `renderJson` / `renderMarkdown` / `renderSarif`, the rule
+registries `RULES` / `PY_SDK_RULES` / `TS_SDK_RULES` / `PLUGIN_RULES` /
+`RUNTIME_RULES`, the detectors `detectMcpSdk` / `detectTsSdk` /
+`classifySpecifier` / `npmRangeFloor` / `clearSdkDetectionCache`, and the
+`Finding` / `PatternId` / `PySdkRuleId` / `TsSdkRuleId` / `PySdkMode` /
+`TsSdkMode` / `Severity` / `Confidence` types.
 
 ## Requirements
 

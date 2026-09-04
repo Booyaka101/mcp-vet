@@ -549,14 +549,15 @@ test('credentials keyed by the ISSUER stay clean; a bare-constant key fires (TS 
 });
 
 test('no rule docUrl points at the /draft/ specification tree (dated permalinks only)', () => {
-  const { RULES, RUNTIME_RULES } = require('../dist/rules.js');
+  // Every registry, not just the protocol rules: a /draft/ URL silently drifts
+  // at the next revision whichever group cites it.
+  const { RULES, RUNTIME_RULES, PLUGIN_RULES, PY_SDK_RULES, TS_SDK_RULES } = require('../dist/rules.js');
   const { SPEC_URL, CHANGELOG_URL, DEPRECATED_REGISTRY_URL } = require('../dist/constants.js');
-  for (const [id, r] of Object.entries(RULES)) {
-    const url = r.docUrl ?? SPEC_URL;
-    assert.ok(!url.includes('/draft/'), `${id} cites a /draft/ URL: ${url}`);
-  }
-  for (const [id, r] of Object.entries(RUNTIME_RULES)) {
-    assert.ok(!r.docUrl.includes('/draft/'), `${id} cites a /draft/ URL: ${r.docUrl}`);
+  for (const registry of [RULES, RUNTIME_RULES, PLUGIN_RULES, PY_SDK_RULES, TS_SDK_RULES]) {
+    for (const [id, r] of Object.entries(registry)) {
+      const url = r.docUrl ?? SPEC_URL;
+      assert.ok(!url.includes('/draft/'), `${id} cites a /draft/ URL: ${url}`);
+    }
   }
   assert.match(CHANGELOG_URL, /\/2026-07-28\/changelog$/, 'changelog pinned to the dated permalink');
   assert.match(DEPRECATED_REGISTRY_URL, /\/2026-07-28\/deprecated$/, 'registry pinned to the dated permalink');
@@ -820,7 +821,10 @@ test('SARIF output is valid 2.1.0 with rules and results', () => {
   rmSync(out, { recursive: true, force: true });
   assert.equal(s.version, '2.1.0');
   assert.equal(s.runs[0].tool.driver.name, 'mcp-vet');
-  assert.equal(s.runs[0].tool.driver.rules.length, 22);
+  // The 22 spec rules are always in the driver; fired PY_SDK/TS_SDK migration
+  // rules join them (see the SARIF tests in py-sdk.test.mjs / ts-sdk.test.mjs).
+  const specRules = s.runs[0].tool.driver.rules.filter((r) => !/^(PY|TS)_SDK_/.test(r.id));
+  assert.equal(specRules.length, 22);
   assert.ok(s.runs[0].results.length > 0);
   for (const r of s.runs[0].results) {
     assert.ok(['error', 'warning'].includes(r.level));

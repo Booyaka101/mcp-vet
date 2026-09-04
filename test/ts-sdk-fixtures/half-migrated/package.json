@@ -1,0 +1,10 @@
+{
+  "name": "ts-sdk-half-migrated",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.19.0",
+    "@modelcontextprotocol/server": "^2.0.0",
+    "zod": "^4.2.0"
+  }
+}

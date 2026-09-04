@@ -1,21 +1,28 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { PatternId, Confidence } from './types';
+import { PatternId, PySdkRuleId, TsSdkRuleId, Confidence } from './types';
 
 export type FailOn = 'breaking' | 'any' | 'none';
 
-export type PySdkConfig = 'auto' | 'v1' | 'v2' | 'off';
+export type SdkGroupConfig = 'auto' | 'v1' | 'v2' | 'off';
+/** @deprecated alias kept for API compatibility; use SdkGroupConfig. */
+export type PySdkConfig = SdkGroupConfig;
+
+/** Any rule id accepted by `only` / `disable`. */
+export type ConfigRuleId = PatternId | PySdkRuleId | TsSdkRuleId;
 
 export interface Config {
   ignore?: string[];
-  only?: PatternId[];
-  disable?: PatternId[];
+  only?: ConfigRuleId[];
+  disable?: ConfigRuleId[];
   failOn?: FailOn;
   minConfidence?: Confidence;
   maxFileSizeKb?: number;
   pythonFallback?: boolean;
   /** PY_SDK_V1 group gate — same values as --py-sdk, plus 'off' (--no-py-sdk) */
-  pySdk?: PySdkConfig;
+  pySdk?: SdkGroupConfig;
+  /** TS_SDK_V1 group gate — same values as --ts-sdk, plus 'off' (--no-ts-sdk) */
+  tsSdk?: SdkGroupConfig;
 }
 
 const CONFIG_NAMES = ['.mcpvetrc.json', 'mcp-vet.config.json'];

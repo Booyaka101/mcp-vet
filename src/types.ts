@@ -184,8 +184,49 @@ export const ALL_PY_SDK_RULE_IDS: PySdkRuleId[] = [
   'PY_SDK_V1_HTTPX',
 ];
 
-/** Any violation id — static pattern, runtime probe category, plugin rule, or Python SDK rule. */
-export type ViolationId = PatternId | RuntimeRuleId | PluginRuleId | PySdkRuleId;
+/**
+ * TypeScript SDK v1→v2 migration rules (added in 0.14.0). The mirror of the
+ * PY_SDK_V1 group: SDK-level, not protocol-level, firing on v1 typescript-sdk
+ * API surface (`@modelcontextprotocol/sdk/...` imports, `McpError`,
+ * `RequestHandlerExtra`, schema-constant handler registration, …) in a project
+ * whose declared dependency resolves to the v2 package split. All DEPRECATED
+ * tier: they warn, exit 0, and never fail a build, because pinning back to
+ * `@modelcontextprotocol/sdk@^1` stays valid and the guide sets no
+ * end-of-support date for v1.x.
+ */
+export type TsSdkRuleId =
+  | 'TS_SDK_V1_MONOLITH'
+  | 'TS_SDK_V1_MCPERROR'
+  | 'TS_SDK_V1_HTTP_ERROR'
+  | 'TS_SDK_V1_JSONRPC_ERROR'
+  | 'TS_SDK_V1_HANDLER_EXTRA'
+  | 'TS_SDK_V1_SCHEMA_HANDLER'
+  | 'TS_SDK_V1_VARIADIC_REG'
+  | 'TS_SDK_V1_WEBSOCKET'
+  | 'TS_SDK_V1_NODE_HTTP_TRANSPORT'
+  | 'TS_SDK_V1_ZOD_COMPAT'
+  | 'TS_SDK_V1_AUTH_MOVED'
+  | 'TS_SDK_V1_RESOURCE_REF'
+  | 'TS_SDK_V1_ZOD3';
+
+export const ALL_TS_SDK_RULE_IDS: TsSdkRuleId[] = [
+  'TS_SDK_V1_MONOLITH',
+  'TS_SDK_V1_MCPERROR',
+  'TS_SDK_V1_HTTP_ERROR',
+  'TS_SDK_V1_JSONRPC_ERROR',
+  'TS_SDK_V1_HANDLER_EXTRA',
+  'TS_SDK_V1_SCHEMA_HANDLER',
+  'TS_SDK_V1_VARIADIC_REG',
+  'TS_SDK_V1_WEBSOCKET',
+  'TS_SDK_V1_NODE_HTTP_TRANSPORT',
+  'TS_SDK_V1_ZOD_COMPAT',
+  'TS_SDK_V1_AUTH_MOVED',
+  'TS_SDK_V1_RESOURCE_REF',
+  'TS_SDK_V1_ZOD3',
+];
+
+/** Any violation id — static pattern, runtime probe category, plugin rule, or SDK migration rule. */
+export type ViolationId = PatternId | RuntimeRuleId | PluginRuleId | PySdkRuleId | TsSdkRuleId;
 
 /**
  * A normalized syntactic token emitted by a language analyzer. Every analyzer
@@ -289,6 +330,32 @@ export interface Token {
   timedeltaValue?: boolean;
   /** True when a kwarg's value is the literal `False` (guards `Client(cache=False)`). */
   isFalse?: boolean;
+  /**
+   * For an `importName` token: the module specifier it was imported FROM
+   * (`'@modelcontextprotocol/sdk/types.js'`). The TS_SDK_V1 rules key on the
+   * (name, source) pair rather than the bare name, so a local class called
+   * `McpError` is not evidence of the SDK. Also set on a property read off a
+   * namespace import (`import * as sdk` → `sdk.McpError`).
+   */
+  importFrom?: string;
+  /**
+   * True when this name token is a property read off something called `extra` —
+   * the v1 handler-context parameter that v2 renames to `ctx` and reshapes
+   * (`extra.signal` → `ctx.mcpReq.signal`).
+   */
+  extraProp?: boolean;
+  /**
+   * True when this name token is the first argument of `setRequestHandler` /
+   * `setNotificationHandler` and is a `*RequestSchema` / `*NotificationSchema`
+   * constant — v2 takes a method string there instead.
+   */
+  schemaHandlerArg?: boolean;
+  /**
+   * True when this name token is the `tool` / `prompt` / `resource` method of a
+   * `x.tool(...)` call — the variadic registration removed in favour of
+   * `registerTool` / `registerPrompt` / `registerResource`.
+   */
+  variadicReg?: boolean;
 }
 
 export interface Finding {

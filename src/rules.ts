@@ -1,4 +1,15 @@
-import { Token, Finding, PatternId, RuntimeRuleId, PluginRuleId, PySdkRuleId, Severity, Confidence } from './types';
+import {
+  Token,
+  Finding,
+  PatternId,
+  RuntimeRuleId,
+  PluginRuleId,
+  PySdkRuleId,
+  TsSdkRuleId,
+  ViolationId,
+  Severity,
+  Confidence,
+} from './types';
 import {
   SPEC_URL,
   SEP_2106_URL,
@@ -14,6 +25,7 @@ import {
   AGENT_PLUGINS_ISSUE_76_URL,
   PY_SDK_MIGRATION_URL,
   PY_SDK_RELEASES_URL,
+  TS_SDK_MIGRATION_URL,
 } from './constants';
 
 interface RuleMeta {
@@ -845,6 +857,76 @@ const PY_V1_CAMEL_FIELDS = new Set(['inputSchema', 'outputSchema', 'isError', 'n
 const MCP_ENV_RE = /^MCP_[A-Z][A-Z0-9_]*$/;
 const OAUTHISH_CALLEE_RE = /oauth|clientcredentials/i;
 
+/** The shape both SDK-migration metadata registries share. */
+interface SdkRuleMeta {
+  label: string;
+  severity: Severity;
+  explanation: string;
+  after: string;
+  docUrl: string;
+}
+
+interface SdkWriterContext<Id extends ViolationId> {
+  registry: Record<Id, SdkRuleMeta>;
+  enabled: Set<Id>;
+  relPath: string;
+  lines: string[];
+  absPath: string;
+  source: NonNullable<Finding['source']>;
+  /** appended to every explanation when the declared major could not be resolved */
+  annotation: string | null;
+  /**
+   * How repeats collapse. 'position' (the default) reports each offending
+   * token; 'line' reports each rule at most once per line, which is what an
+   * import list needs — `import { McpError, ErrorCode }` is one thing to fix,
+   * not two.
+   */
+  dedupeBy?: 'position' | 'line';
+  out: Finding[];
+}
+
+/**
+ * The finding writer shared by the PY_SDK_V1 and TS_SDK_V1 groups: dedupe per
+ * `dedupeBy`, build the Finding from the group's metadata registry, and append
+ * the version annotation when the declared major is unresolved. The optional
+ * `detail` adds a rule-specific sentence before that annotation (the monolith
+ * rule uses it to name where a given v1 subpath lands in v2).
+ */
+function sdkFindingWriter<Id extends ViolationId>(ctx: SdkWriterContext<Id>) {
+  const seen = new Set<string>();
+  return (id: Id, t: Token, confidence: Confidence, detail?: string): void => {
+    if (!ctx.enabled.has(id)) return;
+    const key = ctx.dedupeBy === 'line' ? `${t.line}|${id}` : `${t.line}|${t.col ?? 0}|${id}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    const m = ctx.registry[id];
+    const column = t.col;
+    ctx.out.push({
+      file: ctx.relPath,
+      line: t.line,
+      column,
+      endColumn: column !== undefined ? column + t.value.length : undefined,
+      patternId: id,
+      patternLabel: m.label,
+      severity: m.severity,
+      confidence,
+      explanation: [m.explanation, detail, ctx.annotation].filter(Boolean).join(' '),
+      docUrl: m.docUrl,
+      before: snippet(ctx.lines, t.line),
+      after: m.after,
+      absPath: ctx.absPath,
+      source: ctx.source,
+    });
+  };
+}
+
+/** Findings from an SDK group come out in the same order as every other rule. */
+function byPosition(a: Finding, b: Finding): number {
+  return (
+    a.line - b.line || (a.column ?? 0) - (b.column ?? 0) || a.patternId.localeCompare(b.patternId)
+  );
+}
+
 export interface PySdkEngineOptions {
   enabled: Set<PySdkRuleId>;
   absPath: string;
@@ -868,7 +950,6 @@ export function applyPySdkRules(
   opts: PySdkEngineOptions,
 ): Finding[] {
   const findings: Finding[] = [];
-  const seen = new Set<string>();
 
   const importsMcp = tokens.some(
     (t) =>
@@ -880,30 +961,16 @@ export function applyPySdkRules(
     (t) => t.kind === 'name' && (t.value === 'environ' || t.value === 'getenv'),
   );
 
-  const push = (id: PySdkRuleId, t: Token, confidence: Confidence) => {
-    if (!opts.enabled.has(id)) return;
-    const key = `${t.line}|${t.col ?? 0}|${id}`;
-    if (seen.has(key)) return;
-    seen.add(key);
-    const m = PY_SDK_RULES[id];
-    const column = t.col;
-    findings.push({
-      file: relPath,
-      line: t.line,
-      column,
-      endColumn: column !== undefined ? column + t.value.length : undefined,
-      patternId: id,
-      patternLabel: m.label,
-      severity: m.severity,
-      confidence,
-      explanation: opts.undetermined ? `${m.explanation} (mcp version undetermined)` : m.explanation,
-      docUrl: m.docUrl,
-      before: snippet(lines, t.line),
-      after: m.after,
-      absPath: opts.absPath,
-      source: opts.source,
-    });
-  };
+  const push = sdkFindingWriter<PySdkRuleId>({
+    registry: PY_SDK_RULES,
+    enabled: opts.enabled,
+    relPath,
+    lines,
+    absPath: opts.absPath,
+    source: opts.source,
+    annotation: opts.undetermined ? '(mcp version undetermined)' : null,
+    out: findings,
+  });
 
   for (const t of tokens) {
     const v = t.value;
@@ -976,12 +1043,392 @@ export function applyPySdkRules(
     }
   }
 
-  return findings.sort(
-    (a, b) =>
-      a.line - b.line ||
-      (a.column ?? 0) - (b.column ?? 0) ||
-      a.patternId.localeCompare(b.patternId),
-  );
+  return findings.sort(byPosition);
+}
+
+export interface TsSdkRuleMeta {
+  id: TsSdkRuleId;
+  label: string;
+  severity: Severity;
+  explanation: string;
+  /** the v2 form, rendered as the finding's `after` */
+  after: string;
+  docUrl: string;
+}
+
+/**
+ * TypeScript SDK v1→v2 migration rules (added in 0.14.0) — the mirror of
+ * PY_SDK_RULES. `@modelcontextprotocol/client`, `-/server`, `-/core` and the
+ * framework adapters all went stable on npm on 2026-07-27, retiring the
+ * monolithic `@modelcontextprotocol/sdk` (last 1.x: 1.30.0). Every explanation
+ * quotes docs/migration/upgrade-to-v2.md verbatim, re-verified 2026-09-04.
+ *
+ * All DEPRECATED tier — warn, exit 0, never fail a build. Pinning back to
+ * `@modelcontextprotocol/sdk@^1` stays valid, the guide describes v1/v2
+ * coexistence during a staged migration and ships frozen v1 copies under
+ * `@modelcontextprotocol/server-legacy`, and it names no end-of-support date
+ * for v1.x — so neither does any message here.
+ */
+export const TS_SDK_RULES: Record<TsSdkRuleId, TsSdkRuleMeta> = {
+  TS_SDK_V1_MONOLITH: {
+    id: 'TS_SDK_V1_MONOLITH',
+    label: 'v1 monolith import (@modelcontextprotocol/sdk)',
+    severity: 'DEPRECATED',
+    explanation:
+      'The migration guide splits the single `@modelcontextprotocol/sdk` package into `@modelcontextprotocol/client`, `@modelcontextprotocol/server` and `@modelcontextprotocol/core` (the public Zod schemas), with the framework adapters in `@modelcontextprotocol/node`, `@modelcontextprotocol/express`, `@modelcontextprotocol/hono` and `@modelcontextprotocol/fastify`. Both families coexist in one manifest by their distinct names, so a v1 pin stays valid and the guide names no end-of-support date for v1.x — but objects must not flow between v1-imported and v2-imported code, because class identity fails across that boundary.',
+    after: [
+      "// v2 (Node 20+): npx @modelcontextprotocol/codemod@latest v1-to-v2 .",
+      "import { MCPServer } from '@modelcontextprotocol/server';",
+      "import { CallToolResultSchema } from '@modelcontextprotocol/core';",
+      "import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';",
+    ].join('\n'),
+    docUrl: TS_SDK_MIGRATION_URL,
+  },
+  TS_SDK_V1_MCPERROR: {
+    id: 'TS_SDK_V1_MCPERROR',
+    label: 'v1 McpError / ErrorCode (renamed)',
+    severity: 'DEPRECATED',
+    explanation:
+      'The migration guide renames the error surface: McpError → ProtocolError; ErrorCode → ProtocolErrorCode. The two transport-level members move further — `ErrorCode.RequestTimeout` → `SdkErrorCode.RequestTimeout` and `ErrorCode.ConnectionClosed` → `SdkErrorCode.ConnectionClosed` — because v2 splits the hierarchy into `ProtocolError`, `SdkError` and `SdkHttpError`. The v1 names do not exist in v2.',
+    after: [
+      "import { ProtocolError, ProtocolErrorCode, SdkErrorCode } from '@modelcontextprotocol/core';",
+      '',
+      'throw new ProtocolError(ProtocolErrorCode.InvalidParams, "unknown resource");',
+      '// timeouts/disconnects are SDK-level now: SdkErrorCode.RequestTimeout',
+    ].join('\n'),
+    docUrl: TS_SDK_MIGRATION_URL,
+  },
+  TS_SDK_V1_HTTP_ERROR: {
+    id: 'TS_SDK_V1_HTTP_ERROR',
+    label: 'v1 StreamableHTTPError (removed)',
+    severity: 'DEPRECATED',
+    explanation:
+      'The migration guide: "`StreamableHTTPError` is removed." Its replacement is `SdkHttpError`, the HTTP arm of the new `ProtocolError` / `SdkError` / `SdkHttpError` split.',
+    after: "import { SdkHttpError } from '@modelcontextprotocol/client'; // was: StreamableHTTPError",
+    docUrl: TS_SDK_MIGRATION_URL,
+  },
+  TS_SDK_V1_JSONRPC_ERROR: {
+    id: 'TS_SDK_V1_JSONRPC_ERROR',
+    label: 'v1 JSONRPCError wire type (renamed)',
+    severity: 'DEPRECATED',
+    explanation:
+      'The migration guide renames the wire type "`JSONRPCError`" to "`JSONRPCErrorResponse`", so the JSON-RPC error *envelope* is no longer confusable with a thrown error class.',
+    after: "import type { JSONRPCErrorResponse } from '@modelcontextprotocol/core'; // was: JSONRPCError",
+    docUrl: TS_SDK_MIGRATION_URL,
+  },
+  TS_SDK_V1_HANDLER_EXTRA: {
+    id: 'TS_SDK_V1_HANDLER_EXTRA',
+    label: 'v1 handler `extra` context (now `ctx`)',
+    severity: 'DEPRECATED',
+    explanation:
+      'The migration guide renames the handler-context parameter from `extra` to `ctx` and reshapes it: `extra.signal` → `ctx.mcpReq.signal`, `extra.requestId` → `ctx.mcpReq.id`, `extra._meta` → `ctx.mcpReq._meta`, `extra.sendRequest(…)` → `ctx.mcpReq.send(…)`, `extra.sendNotification(…)` → `ctx.mcpReq.notify(…)`, `extra.sessionId` → `ctx.sessionId`, `extra.authInfo` → `ctx.http?.authInfo`, `extra.requestInfo` → `ctx.http?.req` (a Web `Request`), `extra.closeSSEStream` → `ctx.http?.closeSSE?.()`. The type `RequestHandlerExtra` becomes `ServerContext` / `ClientContext`, and `ctx.http` is undefined on stdio transports — so every `ctx.http` read needs the optional chain.',
+    after: [
+      "server.setRequestHandler('tools/call', async (request, ctx) => {",
+      '  ctx.mcpReq.signal.throwIfAborted();          // was: extra.signal',
+      '  const id = ctx.mcpReq.id;                    // was: extra.requestId',
+      '  const req = ctx.http?.req;                   // was: extra.requestInfo (undefined on stdio)',
+      '  await ctx.mcpReq.notify({ method: "notifications/message", params });',
+      '});',
+    ].join('\n'),
+    docUrl: TS_SDK_MIGRATION_URL,
+  },
+  TS_SDK_V1_SCHEMA_HANDLER: {
+    id: 'TS_SDK_V1_SCHEMA_HANDLER',
+    label: 'v1 setRequestHandler(*RequestSchema, …)',
+    severity: 'DEPRECATED',
+    explanation:
+      'The migration guide: "The low-level handler registration takes a **method string** instead of a Zod schema." `server.setRequestHandler(CallToolRequestSchema, …)` becomes `server.setRequestHandler(\'tools/call\', …)`. Custom methods take a three-argument form carrying an explicit `{ params, result }` schema pair.',
+    after: [
+      "server.setRequestHandler('tools/call', async (request, ctx) => { … });",
+      '',
+      '// custom methods keep their schemas, in the 3-argument form:',
+      "server.setRequestHandler('acme/search', { params: SearchParams, result: SearchResult },",
+      '  async (params, ctx) => { … });',
+    ].join('\n'),
+    docUrl: TS_SDK_MIGRATION_URL,
+  },
+  TS_SDK_V1_VARIADIC_REG: {
+    id: 'TS_SDK_V1_VARIADIC_REG',
+    label: 'v1 variadic .tool() / .prompt() / .resource()',
+    severity: 'DEPRECATED',
+    explanation:
+      'The migration guide: "The deprecated variadic `.tool()`, `.prompt()`, `.resource()` are removed. Use `registerTool` / `registerPrompt` / `registerResource`." v2 also stops auto-wrapping raw shapes, so pass `z.object(…)` explicitly (or `fromJsonSchema()`), and `registerResource` takes a `metadata` argument.',
+    after: [
+      "server.registerTool('greet',",
+      "  { description: 'Greet a user', inputSchema: z.object({ name: z.string() }) },",
+      '  async ({ name }) => ({ content: [{ type: "text", text: `hi ${name}` }] }),',
+      ');',
+    ].join('\n'),
+    docUrl: TS_SDK_MIGRATION_URL,
+  },
+  TS_SDK_V1_WEBSOCKET: {
+    id: 'TS_SDK_V1_WEBSOCKET',
+    label: 'v1 WebSocketClientTransport (removed)',
+    severity: 'DEPRECATED',
+    explanation:
+      'The migration guide: "`WebSocketClientTransport` is removed (WebSocket is not a spec transport)." v2 offers no WebSocket transport; migrate to Streamable HTTP or stdio.',
+    after: [
+      '// no WebSocket transport in SDK v2. Use Streamable HTTP:',
+      "import { StreamableHTTPClientTransport } from '@modelcontextprotocol/client/streamableHttp';",
+    ].join('\n'),
+    docUrl: TS_SDK_MIGRATION_URL,
+  },
+  TS_SDK_V1_NODE_HTTP_TRANSPORT: {
+    id: 'TS_SDK_V1_NODE_HTTP_TRANSPORT',
+    label: 'v1 StreamableHTTPServerTransport (renamed + moved)',
+    severity: 'DEPRECATED',
+    explanation:
+      'The migration guide: "The codemod renames it to `NodeStreamableHTTPServerTransport` from `@modelcontextprotocol/node`. If you deploy to a web-standard runtime (Cloudflare Workers, Deno, Bun), use `WebStandardStreamableHTTPServerTransport`" from `@modelcontextprotocol/server`. The Node adapter is its own package in v2, not part of the server package.',
+    after: [
+      "import { NodeStreamableHTTPServerTransport } from '@modelcontextprotocol/node';",
+      '// web-standard runtimes (Workers/Deno/Bun):',
+      "// import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/server';",
+    ].join('\n'),
+    docUrl: TS_SDK_MIGRATION_URL,
+  },
+  TS_SDK_V1_ZOD_COMPAT: {
+    id: 'TS_SDK_V1_ZOD_COMPAT',
+    label: 'v1 zod-compat helpers (removed)',
+    severity: 'DEPRECATED',
+    explanation:
+      'The migration guide removes the Zod compatibility layer — the `server/zod-compat.js` and `server/zod-json-schema-compat.js` modules and `toJsonSchemaCompat` with it: "Removed Zod-specific helpers: `schemaToJson`, `parseSchemaAsync`, `getSchemaShape`, `getSchemaDescription`, `isOptionalSchema`, `unwrapOptionalSchema` have no replacement." Only two have a route forward: `schemaToJson` becomes `fromJsonSchema()` from `@modelcontextprotocol/server` (or your schema library\'s own conversion), and `parseSchemaAsync` becomes a direct `z.safeParseAsync()`. For `getSchemaShape`, `getSchemaDescription`, `isOptionalSchema` and `unwrapOptionalSchema` the guide says there is no replacement — they were internal introspection.',
+    after: [
+      "import { fromJsonSchema } from '@modelcontextprotocol/server'; // was: schemaToJson",
+      'const parsed = await schema.safeParseAsync(input);             // was: parseSchemaAsync',
+      '// getSchemaShape / getSchemaDescription / isOptionalSchema /',
+      '// unwrapOptionalSchema have no replacement — inline the introspection.',
+    ].join('\n'),
+    docUrl: TS_SDK_MIGRATION_URL,
+  },
+  TS_SDK_V1_AUTH_MOVED: {
+    id: 'TS_SDK_V1_AUTH_MOVED',
+    label: 'v1 server/auth module (moved out of the SDK)',
+    severity: 'DEPRECATED',
+    explanation:
+      'The migration guide moves `@modelcontextprotocol/sdk/server/auth/**` out of the SDK package: "A frozen copy of the v1 classes (and `mcpAuthRouter`) is available from `@modelcontextprotocol/server-legacy/auth` during migration." Resource-server helpers move to `@modelcontextprotocol/express`, the runtime-neutral core to `@modelcontextprotocol/server`, and the individual OAuth error classes (`InvalidClientError`, `InvalidGrantError`, …) consolidate into `OAuthError` with an `OAuthErrorCode` enum. `registerClient()` (Dynamic Client Registration) is removed outright per SEP-2577.',
+    after: [
+      "// frozen v1 copy, for the migration window:",
+      "import { mcpAuthRouter } from '@modelcontextprotocol/server-legacy/auth';",
+      "// resource-server helpers: '@modelcontextprotocol/express'",
+      "// runtime-neutral core:    '@modelcontextprotocol/server'",
+    ].join('\n'),
+    docUrl: TS_SDK_MIGRATION_URL,
+  },
+  TS_SDK_V1_RESOURCE_REF: {
+    id: 'TS_SDK_V1_RESOURCE_REF',
+    label: 'v1 ResourceReference / ResourceTemplate type (renamed)',
+    severity: 'DEPRECATED',
+    explanation:
+      'The migration guide renames the reference types: "`ResourceReference` / `ResourceReferenceSchema`" become "`ResourceTemplateReference` / `ResourceTemplateReferenceSchema`", and the `ResourceTemplate` type from `types.js` becomes `ResourceTemplateType`.',
+    after: [
+      "import type { ResourceTemplateReference, ResourceTemplateType } from '@modelcontextprotocol/core';",
+      "import { ResourceTemplateReferenceSchema } from '@modelcontextprotocol/core';",
+    ].join('\n'),
+    docUrl: TS_SDK_MIGRATION_URL,
+  },
+  TS_SDK_V1_ZOD3: {
+    id: 'TS_SDK_V1_ZOD3',
+    label: 'declared zod range dips below the v2 floor (^4.2.0)',
+    severity: 'DEPRECATED',
+    explanation:
+      'SDK v2 raises the zod floor to `^4.2.0`, where v1 accepted `^3.25 || ^4.0`: "Zod ≥4.2.0 self-converts via `~standard.jsonSchema`". The failure the guide warns about is silent — "a zod-3 range that satisfied the v1 peer installs and typechecks cleanly under v2 and only fails at runtime". v2 also stops auto-wrapping raw shapes, so pass `z.object(…)` or `fromJsonSchema()` explicitly.',
+    after: [
+      '// package.json',
+      '"dependencies": { "zod": "^4.2.0" }   // was: "^3.25 || ^4.0"',
+    ].join('\n'),
+    docUrl: TS_SDK_MIGRATION_URL,
+  },
+};
+
+/**
+ * Module paths that mean the deprecated HTTP+SSE transport (SSE_TRANSPORT_DEPRECATED,
+ * SEP-2596). `@modelcontextprotocol/server-legacy` is scoped to its `/sse`
+ * entry point on purpose: the same package also ships the frozen v1 `/auth`
+ * module, which TS_SDK_V1_AUTH_MOVED tells people to migrate TO. Matching the
+ * bare package name flagged that migration as a deprecated transport. A root
+ * import that really does pull in the transport still trips the ungated
+ * `SSEServerTransport` / `SSEClientTransport` symbol match above.
+ */
+const SSE_TRANSPORT_MODULE_PATHS = [
+  '@modelcontextprotocol/sdk/server/sse',
+  '@modelcontextprotocol/sdk/client/sse',
+  '@modelcontextprotocol/server-legacy/sse',
+  'mcp.server.sse',
+  'mcp.client.sse',
+];
+
+// --- TS_SDK_V1 matcher tables ---------------------------------------------
+
+/** Any @modelcontextprotocol package — the per-file gate for the whole group. */
+const MCP_SDK_SCOPE = '@modelcontextprotocol/';
+const TS_V1_MONOLITH = '@modelcontextprotocol/sdk';
+
+/**
+ * The npm module paths SSE_TRANSPORT_DEPRECATED already owns, derived from its
+ * own table so the two can never drift apart. TS_SDK_V1_MONOLITH suppresses on
+ * them, so one import line never produces two findings for the same fact.
+ */
+const TS_SSE_OWNED_PATHS = SSE_TRANSPORT_MODULE_PATHS.filter((p) => p.startsWith('@'));
+
+/** Where each v1 subpath lands in the v2 split. Most specific prefix first. */
+const TS_V1_PATH_MAP: [string, string][] = [
+  ['@modelcontextprotocol/sdk/server/auth', '@modelcontextprotocol/server-legacy/auth'],
+  ['@modelcontextprotocol/sdk/server/express', '@modelcontextprotocol/express'],
+  ['@modelcontextprotocol/sdk/server/stdio', '@modelcontextprotocol/server/stdio'],
+  ['@modelcontextprotocol/sdk/client/stdio', '@modelcontextprotocol/client/stdio'],
+  ['@modelcontextprotocol/sdk/types', '@modelcontextprotocol/core'],
+  [
+    '@modelcontextprotocol/sdk/shared',
+    'the @modelcontextprotocol/client or @modelcontextprotocol/server root barrel',
+  ],
+  ['@modelcontextprotocol/sdk/server', '@modelcontextprotocol/server'],
+  ['@modelcontextprotocol/sdk/client', '@modelcontextprotocol/client'],
+];
+
+/** A v1 subpath prefix matches the specifier itself, a deeper path, or `.js`. */
+const underPath = (spec: string, prefix: string): boolean =>
+  spec === prefix || spec.startsWith(prefix + '/') || spec.startsWith(prefix + '.');
+
+/** The per-import sentence naming where this specifier's exports moved. */
+function monolithDetail(spec: string): string {
+  const hit = TS_V1_PATH_MAP.find(([p]) => underPath(spec, p));
+  if (!hit) return 'Import from the v2 package that owns the symbol instead.';
+  if (hit[0].endsWith('/types')) return 'types.js schemas moved to @modelcontextprotocol/core.';
+  return `${hit[0]} moves to ${hit[1]}.`;
+}
+
+/** v1 module paths that carry their own rule on top of TS_SDK_V1_MONOLITH. */
+const TS_V1_MODULE_RULES: [string, TsSdkRuleId][] = [
+  ['@modelcontextprotocol/sdk/server/auth', 'TS_SDK_V1_AUTH_MOVED'],
+  ['@modelcontextprotocol/sdk/client/websocket', 'TS_SDK_V1_WEBSOCKET'],
+  ['@modelcontextprotocol/sdk/server/zod-compat', 'TS_SDK_V1_ZOD_COMPAT'],
+  ['@modelcontextprotocol/sdk/server/zod-json-schema-compat', 'TS_SDK_V1_ZOD_COMPAT'],
+];
+
+/**
+ * v1 export names that no longer exist in v2, matched on the (name, source
+ * module) pair — a local class called `McpError` is never evidence of the SDK.
+ */
+const TS_V1_NAMES: Record<string, TsSdkRuleId> = {
+  McpError: 'TS_SDK_V1_MCPERROR',
+  ErrorCode: 'TS_SDK_V1_MCPERROR',
+  StreamableHTTPError: 'TS_SDK_V1_HTTP_ERROR',
+  JSONRPCError: 'TS_SDK_V1_JSONRPC_ERROR',
+  RequestHandlerExtra: 'TS_SDK_V1_HANDLER_EXTRA',
+  WebSocketClientTransport: 'TS_SDK_V1_WEBSOCKET',
+  StreamableHTTPServerTransport: 'TS_SDK_V1_NODE_HTTP_TRANSPORT',
+  schemaToJson: 'TS_SDK_V1_ZOD_COMPAT',
+  parseSchemaAsync: 'TS_SDK_V1_ZOD_COMPAT',
+  getSchemaShape: 'TS_SDK_V1_ZOD_COMPAT',
+  getSchemaDescription: 'TS_SDK_V1_ZOD_COMPAT',
+  isOptionalSchema: 'TS_SDK_V1_ZOD_COMPAT',
+  unwrapOptionalSchema: 'TS_SDK_V1_ZOD_COMPAT',
+  toJsonSchemaCompat: 'TS_SDK_V1_ZOD_COMPAT',
+  ResourceReference: 'TS_SDK_V1_RESOURCE_REF',
+  ResourceReferenceSchema: 'TS_SDK_V1_RESOURCE_REF',
+};
+
+/** The v1 handler-context reads the guide remaps onto `ctx`. */
+const TS_EXTRA_PROPS = new Set([
+  'signal',
+  'requestId',
+  '_meta',
+  'sendRequest',
+  'sendNotification',
+  'sessionId',
+  'authInfo',
+  'requestInfo',
+  'closeSSEStream',
+]);
+
+export interface TsSdkEngineOptions {
+  enabled: Set<TsSdkRuleId>;
+  absPath: string;
+  source: NonNullable<Finding['source']>;
+  /** true when the declared SDK family could not be resolved — annotates findings */
+  undetermined: boolean;
+  /** true when the project declares a zod range admitting below ^4.2.0 */
+  zodBelowFloor: boolean;
+  /** the declared zod range, quoted in the TS_SDK_V1_ZOD3 finding */
+  zodSpecifier?: string;
+}
+
+/**
+ * Apply the TS_SDK_V1 rules to a TypeScript/JavaScript file's tokens. The whole
+ * group is gated on the file importing an `@modelcontextprotocol/*` module, so
+ * a local class called `McpError` in an unrelated file stays clean. The caller
+ * gates on the DECLARED package family (v2 or half-migrated → active, v1 →
+ * suppressed).
+ */
+export function applyTsSdkRules(
+  relPath: string,
+  lines: string[],
+  tokens: Token[],
+  opts: TsSdkEngineOptions,
+): Finding[] {
+  const findings: Finding[] = [];
+
+  const importsSdk = tokens.some((t) => t.importModule && t.value.startsWith(MCP_SDK_SCOPE));
+  if (!importsSdk) return findings;
+
+  const push = sdkFindingWriter<TsSdkRuleId>({
+    registry: TS_SDK_RULES,
+    enabled: opts.enabled,
+    relPath,
+    lines,
+    absPath: opts.absPath,
+    source: opts.source,
+    annotation: opts.undetermined ? '(SDK version undetermined)' : null,
+    dedupeBy: 'line',
+    out: findings,
+  });
+
+  for (const t of tokens) {
+    const v = t.value;
+
+    if (t.importModule) {
+      // The v1 monolith, minus the paths SSE_TRANSPORT_DEPRECATED owns.
+      if (underPath(v, TS_V1_MONOLITH) && !TS_SSE_OWNED_PATHS.some((p) => underPath(v, p))) {
+        push('TS_SDK_V1_MONOLITH', t, 'high', monolithDetail(v));
+      }
+      for (const [mod, id] of TS_V1_MODULE_RULES) {
+        if (underPath(v, mod)) push(id, t, 'high');
+      }
+      // A zod import in a project whose declared range dips below the v2 floor.
+      if (opts.zodBelowFloor && (v === 'zod' || v.startsWith('zod/'))) {
+        const declared = opts.zodSpecifier && `The project declares zod ${opts.zodSpecifier}.`;
+        push('TS_SDK_V1_ZOD3', t, 'medium', declared || undefined);
+      }
+    }
+
+    // v1 export names, keyed on the module they were imported from.
+    if (t.importName && t.importFrom?.startsWith(MCP_SDK_SCOPE)) {
+      const id = TS_V1_NAMES[v];
+      if (id) push(id, t, 'high');
+      // `ResourceTemplate` is the wire TYPE only when it comes from types.js;
+      // the server-side class of the same name is not renamed.
+      if (v === 'ResourceTemplate' && underPath(t.importFrom, '@modelcontextprotocol/sdk/types')) {
+        push('TS_SDK_V1_RESOURCE_REF', t, 'high');
+      }
+    }
+
+    // `extra.signal` and friends — the v1 handler context, now `ctx`.
+    if (t.extraProp && TS_EXTRA_PROPS.has(v)) {
+      push('TS_SDK_V1_HANDLER_EXTRA', t, 'medium');
+    }
+
+    // setRequestHandler(CallToolRequestSchema, …) — v2 takes a method string.
+    if (t.schemaHandlerArg) {
+      push('TS_SDK_V1_SCHEMA_HANDLER', t, 'high');
+    }
+
+    // server.tool(…) / .prompt(…) / .resource(…), removed for registerTool etc.
+    if (t.variadicReg) {
+      push('TS_SDK_V1_VARIADIC_REG', t, /server|mcp/i.test(t.callee ?? '') ? 'high' : 'medium');
+    }
+  }
+
+  return findings.sort(byPosition);
 }
 
 const CAP_RE = /capabilities/i;
@@ -1059,13 +1506,6 @@ const MCP_CONTEXT_RE = /\bmcp\b|mcp[-_]|modelcontextprotocol|model context proto
 // ungated. The generic helper names (python-sdk's sse module surface) are gated
 // on MCP file context like the other SSE rule.
 const SSE_TRANSPORT_CLASSES = new Set(['sseservertransport', 'sseclienttransport']);
-const SSE_TRANSPORT_MODULE_PATHS = [
-  '@modelcontextprotocol/sdk/server/sse',
-  '@modelcontextprotocol/sdk/client/sse',
-  '@modelcontextprotocol/server-legacy',
-  'mcp.server.sse',
-  'mcp.client.sse',
-];
 const SSE_TRANSPORT_HELPERS = new Set(['sse_client', 'sse_app', 'connect_sse', 'handle_post_message']);
 // The endpoint-event write inside a single string literal, e.g.
 // res.write('event: endpoint\ndata: /messages?...'). The field/kwarg form
