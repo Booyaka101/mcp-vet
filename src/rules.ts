@@ -1205,7 +1205,7 @@ export const TS_SDK_RULES: Record<TsSdkRuleId, TsSdkRuleMeta> = {
     label: 'v1 server/auth module (moved out of the SDK)',
     severity: 'DEPRECATED',
     explanation:
-      'The migration guide moves `@modelcontextprotocol/sdk/server/auth/**` out of the SDK package: "A frozen copy of the v1 classes (and `mcpAuthRouter`) is available from `@modelcontextprotocol/server-legacy/auth` during migration." Resource-server helpers move to `@modelcontextprotocol/express`, the runtime-neutral core to `@modelcontextprotocol/server`, and the individual OAuth error classes (`InvalidClientError`, `InvalidGrantError`, …) consolidate into `OAuthError` with an `OAuthErrorCode` enum. `registerClient()` (Dynamic Client Registration) is removed outright per SEP-2577.',
+      'The migration guide moves `@modelcontextprotocol/sdk/server/auth/**` out of the SDK package: "A frozen copy of the v1 classes (and `mcpAuthRouter`) is available from `@modelcontextprotocol/server-legacy/auth` during migration." Resource-server helpers move to `@modelcontextprotocol/express`, the runtime-neutral core to `@modelcontextprotocol/server`, and the individual OAuth error classes (`InvalidClientError`, `InvalidGrantError`, …) consolidate into `OAuthError` with an `OAuthErrorCode` enum. `registerClient()` is NOT removed: SEP-2577 deprecates it and it stays fully functional, but prefer Client ID Metadata Documents per SEP-991.',
     after: [
       "// frozen v1 copy, for the migration window:",
       "import { mcpAuthRouter } from '@modelcontextprotocol/server-legacy/auth';",
@@ -1224,6 +1224,51 @@ export const TS_SDK_RULES: Record<TsSdkRuleId, TsSdkRuleMeta> = {
       "import type { ResourceTemplateReference, ResourceTemplateType } from '@modelcontextprotocol/core';",
       "import { ResourceTemplateReferenceSchema } from '@modelcontextprotocol/core';",
     ].join('\n'),
+    docUrl: TS_SDK_MIGRATION_URL,
+  },
+  TS_SDK_V1_JSONRPC_RESPONSE: {
+    id: 'TS_SDK_V1_JSONRPC_RESPONSE',
+    label: 'v1 JSONRPCResponse (v2 reuses the name for result | error)',
+    severity: 'DEPRECATED',
+    explanation:
+      'This one is a silent widening, not a missing export. The codemod\'s own note: v1\'s `JSONRPCResponse` type and `JSONRPCResponseSchema` constant "both validated only *result* responses. v2 reuses each name for the result|error form", so a migrated `JSONRPCResponseSchema.parse(...)` accepts error responses it used to reject, and a `JSONRPCResponse`-typed value silently widens. It compiles and it typechecks. Rename to the result-only equivalents to keep v1 behaviour: `JSONRPCResponse` → `JSONRPCResultResponse`, `JSONRPCResponseSchema` → `JSONRPCResultResponseSchema`, `isJSONRPCResponse` → `isJSONRPCResultResponse`.',
+    after: [
+      "import { JSONRPCResultResponseSchema, isJSONRPCResultResponse } from '@modelcontextprotocol/core';",
+      '',
+      '// was: JSONRPCResponseSchema.parse(msg) — now also accepts error responses',
+      'const result = JSONRPCResultResponseSchema.parse(msg);',
+    ].join('\n'),
+    docUrl: TS_SDK_MIGRATION_URL,
+  },
+  TS_SDK_V1_COMPLETABLE_NESTING: {
+    id: 'TS_SDK_V1_COMPLETABLE_NESTING',
+    label: 'v1 completable(schema.optional(), cb) nesting',
+    severity: 'DEPRECATED',
+    explanation:
+      'The migration guide: "For **optional completable arguments**, apply `.optional()` to the _result_ of `completable()` — `completable(z.string(), cb).optional()`, not `completable(z.string().optional(), cb)`. v2 resolves completion metadata on the schema found after unwrapping an outer optional wrapper, so the v1 nesting returns empty completion lists — nothing errors" — and if no argument carries completion metadata in the v2 position, the server stops advertising the completions capability at all.',
+    after: 'completable(z.string(), cb).optional()   // was: completable(z.string().optional(), cb)',
+    docUrl: TS_SDK_MIGRATION_URL,
+  },
+  TS_SDK_V1_FINISH_AUTH: {
+    id: 'TS_SDK_V1_FINISH_AUTH',
+    label: 'finishAuth(code) leaves the v2 iss check no input',
+    severity: 'DEPRECATED',
+    explanation:
+      'The migration guide, under "Authorization-server mix-up defense (RFC 9207 / RFC 8414 §3.3) — action required": "`transport.finishAuth()` and `auth()` now validate `iss` from the authorization callback against the issuer recorded from validated AS metadata." Passing only the code string stays type-correct but gives that check nothing to read. Pass the callback URL\'s `URLSearchParams` instead, "so the SDK can read `iss` alongside `code`". The one-argument forms are statically indistinguishable, so this is advisory: a call already passing `URLSearchParams` needs no change. The SDK does not validate `state` — compare it yourself first.',
+    after: [
+      'const params = new URL(callbackUrl).searchParams;',
+      "if (params.get('state') !== expectedState) throw new Error('state mismatch');",
+      'await transport.finishAuth(params);   // SDK reads `code` + `iss`',
+    ].join('\n'),
+    docUrl: TS_SDK_MIGRATION_URL,
+  },
+  TS_SDK_V1_ISOMORPHIC_HEADERS: {
+    id: 'TS_SDK_V1_ISOMORPHIC_HEADERS',
+    label: 'v1 IsomorphicHeaders (removed)',
+    severity: 'DEPRECATED',
+    explanation:
+      'The codemod: "Re-exported IsomorphicHeaders was removed in v2 (replaced by standard Headers API)." v2 uses the Web Standard `Headers` type; there is no v2 export of this name.',
+    after: 'const headers = new Headers(init);   // was: IsomorphicHeaders',
     docUrl: TS_SDK_MIGRATION_URL,
   },
   TS_SDK_V1_ZOD3: {
@@ -1270,8 +1315,15 @@ const TS_V1_MONOLITH = '@modelcontextprotocol/sdk';
  */
 const TS_SSE_OWNED_PATHS = SSE_TRANSPORT_MODULE_PATHS.filter((p) => p.startsWith('@'));
 
-/** Where each v1 subpath lands in the v2 split. Most specific prefix first. */
-const TS_V1_PATH_MAP: [string, string][] = [
+/**
+ * Where each v1 subpath lands in the v2 split. Most specific prefix first. A
+ * null destination means the module was REMOVED with no v2 equivalent, and the
+ * finding has to say so — telling someone to import a removed module from
+ * "whichever package owns it" sends them looking for a package that does not
+ * exist.
+ */
+const TS_V1_PATH_MAP: [string, string | null][] = [
+  ['@modelcontextprotocol/sdk/experimental/tasks', null],
   ['@modelcontextprotocol/sdk/server/auth', '@modelcontextprotocol/server-legacy/auth'],
   ['@modelcontextprotocol/sdk/server/express', '@modelcontextprotocol/express'],
   ['@modelcontextprotocol/sdk/server/stdio', '@modelcontextprotocol/server/stdio'],
@@ -1283,6 +1335,7 @@ const TS_V1_PATH_MAP: [string, string][] = [
   ],
   ['@modelcontextprotocol/sdk/server', '@modelcontextprotocol/server'],
   ['@modelcontextprotocol/sdk/client', '@modelcontextprotocol/client'],
+  ['@modelcontextprotocol/sdk/inMemory', '@modelcontextprotocol/core'],
 ];
 
 /** A v1 subpath prefix matches the specifier itself, a deeper path, or `.js`. */
@@ -1293,6 +1346,9 @@ const underPath = (spec: string, prefix: string): boolean =>
 function monolithDetail(spec: string): string {
   const hit = TS_V1_PATH_MAP.find(([p]) => underPath(spec, p));
   if (!hit) return 'Import from the v2 package that owns the symbol instead.';
+  if (hit[1] === null) {
+    return `${hit[0]} was removed in v2 (SEP-2663 moved tasks to the Extensions Track) and has no v2 equivalent.`;
+  }
   if (hit[0].endsWith('/types')) return 'types.js schemas moved to @modelcontextprotocol/core.';
   return `${hit[0]} moves to ${hit[1]}.`;
 }
@@ -1314,6 +1370,12 @@ const TS_V1_NAMES: Record<string, TsSdkRuleId> = {
   ErrorCode: 'TS_SDK_V1_MCPERROR',
   StreamableHTTPError: 'TS_SDK_V1_HTTP_ERROR',
   JSONRPCError: 'TS_SDK_V1_JSONRPC_ERROR',
+  JSONRPCErrorSchema: 'TS_SDK_V1_JSONRPC_ERROR',
+  isJSONRPCError: 'TS_SDK_V1_JSONRPC_ERROR',
+  JSONRPCResponse: 'TS_SDK_V1_JSONRPC_RESPONSE',
+  JSONRPCResponseSchema: 'TS_SDK_V1_JSONRPC_RESPONSE',
+  isJSONRPCResponse: 'TS_SDK_V1_JSONRPC_RESPONSE',
+  IsomorphicHeaders: 'TS_SDK_V1_ISOMORPHIC_HEADERS',
   RequestHandlerExtra: 'TS_SDK_V1_HANDLER_EXTRA',
   WebSocketClientTransport: 'TS_SDK_V1_WEBSOCKET',
   StreamableHTTPServerTransport: 'TS_SDK_V1_NODE_HTTP_TRANSPORT',
@@ -1339,7 +1401,17 @@ const TS_EXTRA_PROPS = new Set([
   'authInfo',
   'requestInfo',
   'closeSSEStream',
+  'closeStandaloneSSEStream',
 ]);
+
+/**
+ * The one mapped property whose NAME is unchanged in v2 (`extra.sessionId` →
+ * `ctx.sessionId`). Only the parameter rename makes it v1, so it counts as
+ * evidence when the parameter is literally `extra` and not when the name was
+ * resolved from the signature — `s.sessionId` on a parameter called anything
+ * else is just as likely to be correct v2 code.
+ */
+const TS_CTX_UNCHANGED_PROPS = new Set(['sessionId']);
 
 export interface TsSdkEngineOptions {
   enabled: Set<TsSdkRuleId>;
@@ -1413,8 +1485,18 @@ export function applyTsSdkRules(
     }
 
     // `extra.signal` and friends — the v1 handler context, now `ctx`.
-    if (t.extraProp && TS_EXTRA_PROPS.has(v)) {
+    if (t.extraProp && TS_EXTRA_PROPS.has(v) && !(t.ctxParamProp && TS_CTX_UNCHANGED_PROPS.has(v))) {
       push('TS_SDK_V1_HANDLER_EXTRA', t, 'medium');
+    }
+
+    // `completable(schema.optional(), cb)` — the v1 nesting v2 resolves past.
+    if (t.completableOptional) {
+      push('TS_SDK_V1_COMPLETABLE_NESTING', t, 'high');
+    }
+
+    // `finishAuth(code)` — advisory, per the guide's own posture.
+    if (t.finishAuthSingleArg) {
+      push('TS_SDK_V1_FINISH_AUTH', t, 'medium');
     }
 
     // setRequestHandler(CallToolRequestSchema, …) — v2 takes a method string.

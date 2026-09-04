@@ -27,3 +27,13 @@ export function register(server: any, transport: StreamableHTTPServerTransport) 
 
 export type Wire = JSONRPCError | ResourceReference;
 export const oops = (m: string) => new McpError(ErrorCode.InvalidParams, m);
+
+// --- 0.15.0 additions -----------------------------------------------------
+import { JSONRPCResponseSchema } from '@modelcontextprotocol/sdk/types.js';
+import { IsomorphicHeaders } from '@modelcontextprotocol/sdk/shared/transport.js';
+import { completable } from '@modelcontextprotocol/sdk/server/completable.js';
+
+export const arg = completable(z.string().optional(), async () => ['a']);
+export const parse = (m: unknown) => JSONRPCResponseSchema.parse(m);
+export type H = IsomorphicHeaders;
+export const finish = (t: any, code: string) => t.finishAuth(code);

@@ -172,7 +172,7 @@ keeps its SSE findings, which is exactly the under-report 0.12.0 fixes.
 The monolithic `@modelcontextprotocol/sdk` was retired on **2026-07-27**, when
 `@modelcontextprotocol/client`, `@modelcontextprotocol/server`,
 `@modelcontextprotocol/core` and the framework adapters (`/node`, `/express`,
-`/hono`, `/fastify`) all went stable at 2.0.0. These 13 rules fire on v1 SDK
+`/hono`, `/fastify`) all went stable at 2.0.0. These 17 rules fire on v1 SDK
 vocabulary in a project whose **declared** dependencies resolve to that split.
 Like the Python group they are SDK-level, not protocol-level, and all warn at
 exit 0. Pinning back to `@modelcontextprotocol/sdk@^1` remains valid, the guide
@@ -186,7 +186,8 @@ quotes
 | `TS_SDK_V1_MONOLITH` | any `@modelcontextprotocol/sdk/...` import, with the destination named per path (`types.js` → `@modelcontextprotocol/core`, `server/express` → `@modelcontextprotocol/express`, …). Suppressed on the SSE paths `SSE_TRANSPORT_DEPRECATED` already owns |
 | `TS_SDK_V1_MCPERROR` | `McpError` → `ProtocolError`; `ErrorCode` → `ProtocolErrorCode`; `ErrorCode.RequestTimeout` / `.ConnectionClosed` → `SdkErrorCode` |
 | `TS_SDK_V1_HTTP_ERROR` | `StreamableHTTPError` → `SdkHttpError` |
-| `TS_SDK_V1_JSONRPC_ERROR` | `JSONRPCError` → `JSONRPCErrorResponse` |
+| `TS_SDK_V1_JSONRPC_ERROR` | `JSONRPCError` → `JSONRPCErrorResponse`, plus `JSONRPCErrorSchema` and `isJSONRPCError` |
+| `TS_SDK_V1_JSONRPC_RESPONSE` | `JSONRPCResponse` / `JSONRPCResponseSchema` / `isJSONRPCResponse`. **A silent widening, not a rename**: v1 validated only *result* responses, v2 reuses the name for `result | error`, so a migrated `.parse()` accepts errors it used to reject. Rename to the `…ResultResponse…` forms to keep v1 behaviour |
 | `TS_SDK_V1_HANDLER_EXTRA` | `RequestHandlerExtra` and the `extra.*` reads: `extra.signal` → `ctx.mcpReq.signal`, `extra.requestId` → `ctx.mcpReq.id`, `extra.sendRequest` → `ctx.mcpReq.send`, `extra.requestInfo` → `ctx.http?.req`, and the rest of the table. `ctx.http` is undefined on stdio |
 | `TS_SDK_V1_SCHEMA_HANDLER` | `setRequestHandler(CallToolRequestSchema, …)` → `setRequestHandler('tools/call', …)`; custom methods take the 3-argument form |
 | `TS_SDK_V1_VARIADIC_REG` | `server.tool(` / `.prompt(` / `.resource(` → `registerTool` / `registerPrompt` / `registerResource` |
@@ -195,6 +196,9 @@ quotes
 | `TS_SDK_V1_ZOD_COMPAT` | `server/zod-compat.js`, `server/zod-json-schema-compat.js`, and the removed helpers. Only `schemaToJson` (→ `fromJsonSchema()`) and `parseSchemaAsync` (→ `z.safeParseAsync()`) have a route forward; the guide says `getSchemaShape`, `getSchemaDescription`, `isOptionalSchema` and `unwrapOptionalSchema` have none |
 | `TS_SDK_V1_AUTH_MOVED` | `@modelcontextprotocol/sdk/server/auth/**` → `@modelcontextprotocol/server-legacy/auth` (frozen v1 copy), `@modelcontextprotocol/express`, or `@modelcontextprotocol/server` |
 | `TS_SDK_V1_RESOURCE_REF` | `ResourceReference` / `ResourceReferenceSchema` → `ResourceTemplateReference` / `…Schema`; the `ResourceTemplate` type from `types.js` → `ResourceTemplateType` |
+| `TS_SDK_V1_COMPLETABLE_NESTING` | `completable(schema.optional(), cb)` → `completable(schema, cb).optional()`. v2 resolves completion metadata after unwrapping the optional, so the v1 nesting returns empty completion lists and nothing errors |
+| `TS_SDK_V1_FINISH_AUTH` | `finishAuth(code)` with a bare code string. v2 validates `iss` from the callback, so pass the callback URL's `URLSearchParams` instead. Advisory: the guide calls the two one-argument forms statically indistinguishable, so this needs a string literal or a plainly code-named binding |
+| `TS_SDK_V1_ISOMORPHIC_HEADERS` | `IsomorphicHeaders` → the Web Standard `Headers` type |
 | `TS_SDK_V1_ZOD3` | a `zod` import in a project whose declared zod range admits below `^4.2.0`. v1's peer was `^3.25 \|\| ^4.0`, which "installs and typechecks cleanly under v2 and only fails at runtime" |
 
 **Gating (`--ts-sdk auto`, the default).** The declared family is read from the
@@ -947,7 +951,7 @@ These are locked into the test suite as `test/fixtures/adversarial/missed/` — 
 - **Computed credential-store keys** — `store.set(key_for(server_url), creds)` is skipped rather than guessed at, even when the computed key is in fact a server URL (`missed/computed_cred_key.py`).
 - **Dynamic transport selection** — `mcp.run({ transport })` where the name comes from a variable or environment never puts the literal `'sse'` under the `transport` key, so `SSE_TRANSPORT_DEPRECATED` cannot fire (`missed/dynamic-transport.ts`). Template-literal SSE frames (`` res.write(`event: endpoint…${id}`) ``) are likewise invisible to the string tokenizer — write the frame name as a plain literal or catch it at runtime with `probe --spec` (`legacy-sse-transport`).
 - The **regex fallback** (no Python interpreter) covers only the deterministic rules at reduced precision (the auth-hardening rules need the AST analyzers); install Python for full `.py` fidelity.
-- **`TS_SDK_V1_HANDLER_EXTRA` reads a parameter literally named `extra`** — the guide's own name, and what the codemod looks for. A handler that calls it `_extra` or `e` is only caught through its `RequestHandlerExtra` type import, if it has one.
+- **Two v1→v2 changes deliberately have no rule.** The deprecated runtime APIs (`Server.createMessage` / `listRoots` / `sendLoggingMessage`, `Client.setLoggingLevel` / `sendRootsListChanged`, `registerClient`) are `@deprecated` in v2 but, in the guide's words, "still fully functional" with their v1 signatures — and `ROOTS_CAP` / `SAMPLING_CAP` / `LOGGING_CAP` already cover the underlying deprecation. And the second argument to `client.request(req, ResultSchema)` is still valid v2 for custom methods and passthroughs, so a rule on it would fire on correct code.
 - **`TS_SDK_V1_ZOD3` anchors on a `zod` import.** A project on a below-floor zod range whose SDK files never import zod directly gets no finding, the same shape as `PY_SDK_V1_HTTPX`. Check the declared range yourself if no file imports zod.
 - **`TS_SDK_V1_VARIADIC_REG` matches `x.tool(` / `.prompt(` / `.resource(` with two or more arguments** in a file that imports the SDK. An unrelated `agent.tool(a, b)` in such a file reports at *medium*; a receiver whose name mentions `server` or `mcp` reports at *high*. Filter with `--min-confidence high` if a codebase mixes agent frameworks.
 - **A lockfile that names an MCP package only transitively decides the gate** when `package.json` names none. That is deliberate — a file importing the SDK really is using whatever version resolved — but `--ts-sdk` overrides it.
