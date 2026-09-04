@@ -13,6 +13,23 @@ const SSE_OPTION_KEYS = new Set(['eventStore', 'resumptionToken', 'onresumptiont
 // -Resource replace them).
 const VARIADIC_REG = new Set(['tool', 'prompt', 'resource']);
 
+/**
+ * The name a request handler gives its second (context) parameter, or
+ * undefined. v1 calls it `extra` by convention and v2 calls it `ctx`, but the
+ * name is the author's choice, so the rules read it off the signature instead
+ * of assuming. `ctx` is excluded: reads off an already-renamed parameter are
+ * the migrated form.
+ */
+function contextParamName(handler: Node): string | undefined {
+  const fn =
+    handler.asKind(SyntaxKind.ArrowFunction) ?? handler.asKind(SyntaxKind.FunctionExpression);
+  if (!fn) return undefined;
+  const params = fn.getParameters();
+  if (params.length < 2) return undefined;
+  const name = params[1].getName();
+  return name && name !== 'ctx' ? name : undefined;
+}
+
 function getProject(): Project {
   if (!project) {
     project = new Project({
@@ -354,6 +371,31 @@ export function analyzeTs(absPath: string, text: string): Token[] {
       }
     }
 
+    // `import x = require('…')` — an ExternalModuleReference, not a call, so
+    // the pass below never sees it.
+    for (const ref of sf.getDescendantsOfKind(SyntaxKind.ExternalModuleReference)) {
+      try {
+        const arg = ref.getExpression();
+        if (!arg) continue;
+        const k = arg.getKind();
+        if (k !== SyntaxKind.StringLiteral && k !== SyntaxKind.NoSubstitutionTemplateLiteral) continue;
+        const { line, col } = posOf(arg);
+        tokens.push({
+          kind: 'string',
+          value: (arg as any).getLiteralValue(),
+          line,
+          col,
+          importModule: true,
+        });
+      } catch {
+        /* ignore */
+      }
+    }
+
+    // Handler-context parameter names resolved from handler signatures, so
+    // `(req, e) => e.signal` is found as well as the conventional `extra`.
+    const contextParamNames = new Set<string>();
+
     // One pass over call expressions, for the module evidence a plain-JS server
     // gives (`require('…')`, dynamic `import('…')` — neither produces an
     // ImportDeclaration), the schema-constant handler registration v2 replaces
@@ -365,6 +407,17 @@ export function analyzeTs(absPath: string, text: string): Token[] {
         const args = call.getArguments();
         if (expr.getKind() !== SyntaxKind.PropertyAccessExpression) {
           const exprText = expr.getText();
+          if (exprText === 'completable') {
+            // v2 resolves completion metadata after unwrapping an outer
+            // optional, so `completable(schema.optional(), cb)` registers it a
+            // level too deep and completions come back empty. Nothing errors.
+            const first = args[0];
+            if (first && /\.optional\(\s*\)\s*$/.test(first.getText())) {
+              const { line, col } = posOf(expr);
+              tokens.push({ kind: 'name', value: 'completable', line, col, completableOptional: true });
+            }
+            continue;
+          }
           if (exprText !== 'require' && exprText !== 'import') continue;
           const arg = args[0];
           const kind = arg?.getKind();
@@ -391,6 +444,29 @@ export function analyzeTs(absPath: string, text: string): Token[] {
               const { line, col } = posOf(first);
               tokens.push({ kind: 'name', value: canonical, line, col, schemaHandlerArg: true });
             }
+          }
+          // The handler's own signature names the context parameter, so a
+          // handler that calls it anything other than `extra` is still found.
+          const handler = args[args.length - 1];
+          const ctxParam = handler && contextParamName(handler);
+          if (ctxParam) contextParamNames.add(ctxParam);
+        } else if (method === 'finishAuth' && args.length === 1) {
+          // v2 reads `iss` alongside `code` from the callback's URLSearchParams;
+          // a bare code string leaves the mix-up defense with no input. The
+          // guide calls the two one-argument forms "statically
+          // indistinguishable", so this needs POSITIVE evidence of a code
+          // string — a literal, or a plainly code-named binding. Absence of the
+          // word "params" is not evidence: the SDK's own examples pass
+          // URLSearchParams as `params`, `callbackParams`, and the result of a
+          // helper call, and every one of those must stay clean.
+          const arg = args[0];
+          const k = arg.getKind();
+          const text = arg.getText();
+          const literal = k === SyntaxKind.StringLiteral || k === SyntaxKind.NoSubstitutionTemplateLiteral;
+          const codeNamed = k === SyntaxKind.Identifier && /^(auth(orization)?)?code$/i.test(text);
+          if (literal || codeNamed) {
+            const { line, col } = posOf(pae.getNameNode());
+            tokens.push({ kind: 'name', value: method, line, col, finishAuthSingleArg: true });
           }
         } else if (VARIADIC_REG.has(method) && args.length >= 2) {
           const { line, col } = posOf(pae.getNameNode());
@@ -423,6 +499,11 @@ export function analyzeTs(absPath: string, text: string): Token[] {
         }
         if (objectText === 'extra') {
           tokens.push({ kind: 'name', value: name, line, col, extraProp: true });
+        } else if (contextParamNames.has(objectText)) {
+          // Same read, but the parameter name came from the signature rather
+          // than the `extra` convention — the rule scores it separately because
+          // one mapped property (`sessionId`) keeps its name in v2.
+          tokens.push({ kind: 'name', value: name, line, col, extraProp: true, ctxParamProp: true });
         }
         const from = namespaceBindings.get(objectText);
         if (from) {

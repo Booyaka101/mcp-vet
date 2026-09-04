@@ -4,6 +4,102 @@ All notable changes to `mcp-vet` are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.15.0]
+
+Measured the 0.14.0 TypeScript group instead of assuming it, and fixed what the
+measurement found. The official `@modelcontextprotocol/codemod` package ships
+the v1→v2 mappings as data, which makes it a labeled ground-truth set: run
+every entry through mcp-vet and recall stops being a guess. It was **89.8%**
+(53/59). It is now **100%** (59/59), and the two messages the audit found to be
+factually wrong are corrected. `BENCHMARK.md` carries the corpus, the tables and
+the reproduction command; `scripts/ts-sdk-recall.mjs` is the harness.
+
+The same exercise killed two rules before they shipped. Both would have fired
+on correct v2 code, the failure mode this project already has a scar from
+(0.10.0 → 0.10.1).
+
+### Added
+
+- **`TS_SDK_V1_JSONRPC_RESPONSE`**: `JSONRPCResponse`,
+  `JSONRPCResponseSchema`, `isJSONRPCResponse`. The most valuable of the four,
+  because it is a silent widening rather than a missing export: v1 validated
+  only *result* responses and v2 reuses each name for the `result | error`
+  form, so a migrated `JSONRPCResponseSchema.parse(...)` accepts error
+  responses it used to reject. It compiles, it typechecks, and the behaviour
+  changed. Rename to the `…ResultResponse…` forms to keep v1 semantics.
+- **`TS_SDK_V1_COMPLETABLE_NESTING`**: `completable(schema.optional(), cb)`.
+  v2 resolves completion metadata on the schema found *after* unwrapping an
+  outer optional, so the v1 nesting registers it a level too deep: completion
+  lists come back empty, nothing errors, and if no argument carries metadata in
+  the v2 position the server stops advertising the capability. The v2 spelling
+  is `completable(schema, cb).optional()`.
+- **`TS_SDK_V1_FINISH_AUTH`**: `finishAuth(code)` with a bare code string. v2
+  validates `iss` from the authorization callback against the recorded issuer,
+  and a code string gives that check nothing to read. Pass the callback URL's
+  `URLSearchParams`.
+- **`TS_SDK_V1_ISOMORPHIC_HEADERS`**: `IsomorphicHeaders`, removed in v2 in
+  favour of the Web Standard `Headers` type.
+- `TS_SDK_V1_JSONRPC_ERROR` also matches `JSONRPCErrorSchema` and
+  `isJSONRPCError`; `TS_SDK_V1_HANDLER_EXTRA` also matches
+  `extra.closeStandaloneSSEStream`. Both were gaps against
+  `contextPropertyMap.ts` / `symbolMap.ts`.
+- **The handler context parameter is now read off the handler's own signature**
+  rather than assumed to be named `extra`, so `(req, e) => e.signal` is found.
+  `sessionId` is the one mapped property that keeps its name in v2, so it
+  counts as evidence only on a literal `extra`: neither `ctx.sessionId` nor
+  `e2.sessionId` fires.
+- `import x = require('…')` carries the same module evidence as `import` and
+  `require()`. It is an `ExternalModuleReference`, so the call-expression pass
+  never saw it.
+
+### Fixed
+
+- **`TS_SDK_V1_AUTH_MOVED` claimed `registerClient()` "is removed outright per
+  SEP-2577". Both halves were wrong.** It is `@deprecated` in v2 and, per the
+  guide, "still fully functional"; the replacement pointer is Client ID
+  Metadata Documents per **SEP-991**. Shipped in 0.14.0, corrected here.
+- **`TS_SDK_V1_MONOLITH` told you to move modules that were removed.**
+  `@modelcontextprotocol/sdk/experimental/tasks` is `status: 'removed'`
+  upstream (SEP-2663 moved tasks to the Extensions Track, no v2 equivalent),
+  but it matched no entry in the path map and fell through to the generic
+  *"Import from the v2 package that owns the symbol instead"*, pointing at a
+  package that does not exist. Removed modules now say so, and `inMemory.js`
+  gained a real destination.
+
+### Not added, deliberately
+
+Both of these were on the plan until the source said otherwise. Recorded
+because the reasoning is the useful part:
+
+- **A rule for the "removed" runtime APIs** (`Server.createMessage` /
+  `listRoots` / `sendLoggingMessage`, `Client.setLoggingLevel` /
+  `sendRootsListChanged`, `registerClient`). They are not removed. All five are
+  present in the v2 source, the guide files them under *Deprecated in v2
+  (SEP-2577)* as "still fully functional … annotation-only", and
+  `ROOTS_CAP` / `SAMPLING_CAP` / `LOGGING_CAP` already cover the underlying
+  deprecation. The rule would have fired on correct v2 code.
+- **A rule for the schema argument to `client.request(req, ResultSchema)`.**
+  The codemod removes it only for spec methods whose result type v2 infers from
+  the method string; the guide shows the same two-argument call as a
+  "v1-identical passthrough" for custom methods. Not statically separable
+  without knowing the method literal, so no rule.
+
+`TS_SDK_V1_FINISH_AUTH` survived a version of the same mistake. Its first cut
+flagged any single-argument call that did not mention `params`, which produced
+**six false positives** on the SDK's own v2 examples, every one passing
+`URLSearchParams` through a variable. It now requires positive evidence of a
+code string (a literal, or a plainly code-named binding), which is what the
+guide's "statically indistinguishable" warning demands.
+
+### Changed
+
+- `scripts/ts-sdk-recall.mjs` runs the recall benchmark against the codemod's
+  mapping tables and prints 59/59. `BENCHMARK.md` gains the TS_SDK section:
+  precision corpus (`typescript-sdk/examples` @ `5119ee7`, 144 files, **0 false
+  positives**), the recall tables, and the reproduction commands.
+- Terminal summary reads `17 TypeScript SDK rules`; the config schema lists all
+  51 rule ids.
+
 ## [0.14.0]
 
 MCP TypeScript SDK v2 awareness, the mirror of 0.12.0's Python group, for the

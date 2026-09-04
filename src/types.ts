@@ -207,7 +207,11 @@ export type TsSdkRuleId =
   | 'TS_SDK_V1_ZOD_COMPAT'
   | 'TS_SDK_V1_AUTH_MOVED'
   | 'TS_SDK_V1_RESOURCE_REF'
-  | 'TS_SDK_V1_ZOD3';
+  | 'TS_SDK_V1_ZOD3'
+  | 'TS_SDK_V1_JSONRPC_RESPONSE'
+  | 'TS_SDK_V1_COMPLETABLE_NESTING'
+  | 'TS_SDK_V1_FINISH_AUTH'
+  | 'TS_SDK_V1_ISOMORPHIC_HEADERS';
 
 export const ALL_TS_SDK_RULE_IDS: TsSdkRuleId[] = [
   'TS_SDK_V1_MONOLITH',
@@ -223,6 +227,10 @@ export const ALL_TS_SDK_RULE_IDS: TsSdkRuleId[] = [
   'TS_SDK_V1_AUTH_MOVED',
   'TS_SDK_V1_RESOURCE_REF',
   'TS_SDK_V1_ZOD3',
+  'TS_SDK_V1_JSONRPC_RESPONSE',
+  'TS_SDK_V1_COMPLETABLE_NESTING',
+  'TS_SDK_V1_FINISH_AUTH',
+  'TS_SDK_V1_ISOMORPHIC_HEADERS',
 ];
 
 /** Any violation id — static pattern, runtime probe category, plugin rule, or SDK migration rule. */
@@ -350,6 +358,23 @@ export interface Token {
    * constant — v2 takes a method string there instead.
    */
   schemaHandlerArg?: boolean;
+  /**
+   * True when this name token is the first argument of `completable(...)` and
+   * that argument ends in `.optional()` — the v1 nesting v2 resolves past.
+   */
+  completableOptional?: boolean;
+  /**
+   * True when this name token is a `finishAuth` call taking exactly one
+   * argument that is not `URLSearchParams`-shaped, so the v2 `iss` check has
+   * no input to read.
+   */
+  finishAuthSingleArg?: boolean;
+  /**
+   * True when this name token is a property read off the handler-context
+   * parameter resolved from the handler's own signature rather than the
+   * literal name `extra` (`(req, e) => e.signal`).
+   */
+  ctxParamProp?: boolean;
   /**
    * True when this name token is the `tool` / `prompt` / `resource` method of a
    * `x.tool(...)` call — the variadic registration removed in favour of

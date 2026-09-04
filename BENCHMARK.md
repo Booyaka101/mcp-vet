@@ -63,6 +63,152 @@ corpus was systematically blind to a whole class of defect. Both wild false
 positives are now regression fixtures (`negatives/server_dcr_handler.py`,
 `auth/handrolled-client.py`).
 
+## TS_SDK_V1 group — precision and measured recall (v0.14.0 → v0.15.0)
+
+Run 2026-09-04, after 0.14.0 shipped. The pinned corpus above cannot exercise
+this group at all: every repo in it declares `@modelcontextprotocol/sdk` ^1, so
+`--ts-sdk auto` correctly suppresses the rules. Same blind spot the v0.10.3
+OAuth exercise found, same fix — sample the population the rules actually
+target.
+
+### Precision: the SDK's own v2 examples
+
+| Repo | Commit | Root | Files |
+| --- | --- | --- | --- |
+| [modelcontextprotocol/typescript-sdk](https://github.com/modelcontextprotocol/typescript-sdk) | `5119ee7fd7790e335a3fb60ef36f85334e2a6326` | `examples/` | 144 |
+
+`examples/package.json` declares the full v2 set (`client`, `core`, `express`,
+`fastify`, `hono`, `node`, `server`, `server-legacy`), so the gate resolves to
+**v2** and the whole group is live. This is correct v2 code written by the SDK
+authors, so every TS_SDK finding here would be a false positive.
+
+**Result: 0 TS_SDK findings across 144 files. 0 false positives.** Re-verified
+after the 0.15.0 rules were added: still 0.
+
+That re-verification earned its keep. The first cut of `TS_SDK_V1_FINISH_AUTH`
+flagged any single-argument `finishAuth()` call that did not mention `params`,
+and produced **six false positives** here — `finishAuth(params)`,
+`finishAuth(callbackParams)`, `finishAuth(await followAuthorize(...))`, all
+passing `URLSearchParams` through a variable. The guide calls the two
+one-argument forms "statically indistinguishable", so the rule was rewritten to
+need positive evidence of a code string. Absence of the word "params" is not
+evidence.
+
+One near-miss worth recording: `examples/cli-client/host/host.ts` has a private
+method `resolveResourceReference()` called three times. A substring matcher
+would have produced three `TS_SDK_V1_RESOURCE_REF` false positives. The rule
+keys on the (imported name, source module) pair, so a method name that merely
+contains a v1 symbol never fires.
+
+The 134 findings on that root are all pre-existing protocol rules
+(`SSE_TRANSPORT_DEPRECATED` on the deliberate legacy-transport examples,
+deprecated-capability method strings, and so on), unrelated to this group.
+
+### Recall: measured against the codemod's own tables
+
+The header of the recall section below says a corpus-wide recall percentage
+would need "a labeled set of every legacy usage in the wild, which nobody has."
+For **this group** that set does exist: the official
+`@modelcontextprotocol/codemod` package ships the v1→v2 mappings as data, and
+they are the reference implementation's own definition of what needs migrating.
+
+Every entry was fed through mcp-vet as a synthetic file in a v2-declaring
+project (`scripts/ts-sdk-recall.mjs`):
+
+| Table (source) | Entries | Caught | Recall |
+| --- | ---: | ---: | ---: |
+| `mappings/symbolMap.ts` → `SIMPLE_RENAMES` | 9 | 4 | 44% |
+| `mappings/contextPropertyMap.ts` → `CONTEXT_PROPERTY_MAP` | 10 | 9 | 90% |
+| `mappings/importMap.ts` → `IMPORT_MAP` keys | 34 | 34 | **100%** |
+| `transforms/removedApis.ts` → `REMOVED_ZOD_HELPERS` | 6 | 6 | **100%** |
+| **Total** | **59** | **53** | **89.8%** |
+
+Re-run after the 0.15.0 additions: **59/59, 100%.** Every row above is now a
+HIT. `node scripts/ts-sdk-recall.mjs` reproduces it.
+
+Import-path recall is 100% because `TS_SDK_V1_MONOLITH` is a catch-all on
+`@modelcontextprotocol/sdk/…`; the two SSE paths are reported by
+`SSE_TRANSPORT_DEPRECATED` instead, by design.
+
+### The six misses, and one defect (all fixed in v0.15.0)
+
+Symbol renames (5 of the 6 misses), all from `SIMPLE_RENAMES`:
+
+| Missed symbol | v2 name |
+| --- | --- |
+| `JSONRPCErrorSchema` | `JSONRPCErrorResponseSchema` |
+| `isJSONRPCError` | `isJSONRPCErrorResponse` |
+| `isJSONRPCResponse` | `isJSONRPCResultResponse` |
+| `JSONRPCResponse` | `JSONRPCResultResponse` |
+| `JSONRPCResponseSchema` | `JSONRPCResultResponseSchema` |
+
+The last two matter more than a rename. The codemod's own comment: v1's
+`JSONRPCResponse` / `JSONRPCResponseSchema` validated only *result* responses,
+and v2 reuses both names for the `result | error` union, so a migrated
+`JSONRPCResponseSchema.parse(...)` **silently widens** to accept error
+responses it used to reject. That is a compiles-clean, tests-pass behaviour
+change, which is exactly the class this tool exists to catch.
+
+Sixth miss: `extra.closeStandaloneSSEStream` → `ctx.http?.closeStandaloneSSE`,
+the one entry of `CONTEXT_PROPERTY_MAP` not in `TS_EXTRA_PROPS`.
+
+Three further gaps the tables surfaced that are not symbol lookups:
+
+- **`completable(z.string().optional(), cb)`** — v2 resolves completion
+  metadata after unwrapping the optional, so the v1 nesting registers it one
+  level too deep. Per the codemod: completions come back empty and the server
+  may stop advertising the capability. Compiles fine. No rule.
+- **`client.request(req, SomeResultSchema)` / `callTool(..., Schema)`** — v2
+  removes the schema parameter (`transforms/schemaParamRemoval.ts`).
+  `TS_SDK_V1_SCHEMA_HANDLER` only covers `setRequestHandler` /
+  `setNotificationHandler`. No rule.
+- **`finishAuth(code)` with one argument** — stays type-correct, but the v2
+  `iss` verification then has no input. The codemod emits an advisory. No rule.
+
+And one **defect, not a gap**: `@modelcontextprotocol/sdk/experimental/tasks`
+is `status: 'removed'` in `IMPORT_MAP` (SEP-2663, moved to the Extensions
+Track, no v2 equivalent). `TS_SDK_V1_MONOLITH` falls through to its generic
+detail and advises *"Import from the v2 package that owns the symbol instead"*
+— pointing at a package that does not exist. Same generic fallback fires for
+`inMemory.js`. Wrong advice is worse than no advice.
+
+### Two rules the audit stopped from shipping
+
+Both were on the plan; the source said otherwise. Both would have fired on
+correct v2 code, which is the failure this project already has a scar from
+(v0.10.0 → v0.10.1).
+
+- **The "removed" runtime APIs.** A summary of the guide listed
+  `Server.createMessage` / `listRoots` / `sendLoggingMessage`,
+  `Client.setLoggingLevel` / `sendRootsListChanged` and `registerClient` under
+  "Removed entirely". Grepping the v2 source found all five still present
+  (`packages/server/src/server/server.ts:1042`, `:1278`, `:1294`;
+  `packages/client/src/client/client.ts:1571`, `:2626`), and the guide files
+  them under *Deprecated in v2 (SEP-2577)*: "still fully functional in v2 …
+  The deprecation is annotation-only." The same grep caught a factual error in
+  a message that had already shipped in 0.14.0, corrected in 0.15.0.
+- **The schema argument to `client.request(req, ResultSchema)`.** The codemod
+  removes it only for spec methods whose result type v2 infers from the method
+  string; the guide shows the identical two-argument call as a "v1-identical
+  passthrough" for custom methods. Not statically separable, so no rule.
+
+### How large is the population today
+
+GitHub code search, same day, `filename:package.json`:
+
+| Query | Matching files |
+| --- | ---: |
+| `@modelcontextprotocol/sdk` (v1 monolith) | ~101,600 |
+| `@modelcontextprotocol/server` | ~5,000 |
+| `@modelcontextprotocol/client` | ~1,600 |
+
+Order-of-magnitude only: code search counts files, not repos, indexes a subset,
+and the v2 counts include the SDK monorepo, forks and `server-legacy`
+substring hits. The shape is what matters — five weeks after the v2 release the
+v1 population is roughly **twenty times** the v2 one. The group's audience is
+small today and nearly all of it is still ahead, which is the argument for
+closing the gaps above now rather than after the bulk of the migration.
+
 ## Results — v0.10.4 (22-rule engine, HTTP+SSE transport rule added)
 
 Re-run 2026-08-09 with `mcp-vet` v0.10.4 on the SAME pinned corpus:
@@ -278,13 +424,20 @@ silent claim-inflation fails CI):
   name is flagged in the wrapper file, but a consumer importing only the new
   name scans clean on its own
 
-There is no corpus-wide recall *percentage*: that would require a labeled set
-of every legacy usage in the wild, which nobody has. What we can say is: for
-the pattern shapes listed in the README, detection is exact; for the shapes
-above, it is zero, and the tool says so — pair the scan with runtime checks
-(`mcp-vet fixtures`) to cover the difference.
+There is no corpus-wide recall *percentage* for the protocol rules: that would
+require a labeled set of every legacy usage in the wild, which nobody has. What
+we can say is: for the pattern shapes listed in the README, detection is exact;
+for the shapes above, it is zero, and the tool says so — pair the scan with
+runtime checks (`mcp-vet fixtures`) to cover the difference.
+
+The `TS_SDK_V1_*` group is the exception, and the only rule set here with a
+measured recall number (**89.8%**, 53/59). It has a labeled set the protocol
+rules do not: the official codemod ships the v1→v2 mappings as data. See the
+v0.14.0 section above for the table and the six misses.
 
 ## Reproducing
+
+Protocol-rule corpus:
 
 ```bash
 git clone --depth 1 https://github.com/modelcontextprotocol/servers
@@ -292,4 +445,18 @@ git clone --depth 1 https://github.com/modelcontextprotocol/typescript-sdk
 git clone --depth 1 https://github.com/modelcontextprotocol/python-sdk
 # check out the pinned SHAs above, then:
 npx @booyaka/mcp-vet servers/src typescript-sdk/examples python-sdk/examples --json --no-files
+```
+
+TS_SDK_V1 precision (expects zero TS_SDK findings on correct v2 code):
+
+```bash
+git clone https://github.com/modelcontextprotocol/typescript-sdk
+git -C typescript-sdk checkout 5119ee7fd7790e335a3fb60ef36f85334e2a6326
+npx @booyaka/mcp-vet typescript-sdk/examples --json --no-files
+```
+
+TS_SDK_V1 recall against the codemod's own mapping tables (prints 53/59):
+
+```bash
+npm run build && node scripts/ts-sdk-recall.mjs
 ```

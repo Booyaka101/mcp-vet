@@ -172,10 +172,10 @@ test('WORKED EXAMPLE: McpError/ErrorCode from types.js = MONOLITH + MCPERROR, ex
     [cli, join(tsFixtures, 'v2-server', 'server.ts'), '--no-files', '--no-color'],
     { encoding: 'utf8' },
   );
-  assert.match(shown.stdout, /22 spec rules, 0 breaking; 13 TypeScript SDK rules, 2 advisory/);
+  assert.match(shown.stdout, /22 spec rules, 0 breaking; 17 TypeScript SDK rules, 2 advisory/);
 });
 
-test('all 13 TS_SDK_V1 rules fire on the kitchen sink, all DEPRECATED, exit 0', () => {
+test('all 17 TS_SDK_V1 rules fire on the kitchen sink, all DEPRECATED, exit 0', () => {
   const res = runCli([join(tsFixtures, 'v2-server', 'kitchen-sink.ts')]);
   assert.equal(res.status, 0);
   const ids = new Set(res.findings.map((f) => f.patternId));
@@ -405,6 +405,126 @@ test('a narrow SDK-group suppression does not silently disable the spec rules', 
   const oneRes = runCli([one]);
   rmSync(one, { recursive: true, force: true });
   assert.deepEqual(oneRes.findings.map((f) => f.patternId), ['TS_SDK_V1_MONOLITH'], show(oneRes.findings));
+});
+
+test('the monolith rule never tells you to move a module that was removed', () => {
+  // sdk/experimental/tasks is `status: 'removed'` upstream (SEP-2663). The
+  // generic fallback used to advise "import from the v2 package that owns the
+  // symbol", pointing at a package that does not exist.
+  const dir = project({
+    'package.json': '{"dependencies":{"@modelcontextprotocol/server":"^2.0.0"}}',
+    'a.ts': "import * as tasks from '@modelcontextprotocol/sdk/experimental/tasks.js';\nexport const t = tasks;\n",
+  });
+  const res = runCli([dir]);
+  rmSync(dir, { recursive: true, force: true });
+  const f = res.findings.find((x) => x.patternId === 'TS_SDK_V1_MONOLITH');
+  assert.ok(f, show(res.findings));
+  assert.match(f.explanation, /was removed in v2 .*and has no v2 equivalent/);
+  assert.ok(!/package that owns the symbol/.test(f.explanation), 'no move-it-somewhere advice');
+});
+
+test('TS_SDK_V1_AUTH_MOVED does not claim registerClient was removed', () => {
+  // It is @deprecated in v2 and still fully functional; the replacement is
+  // Client ID Metadata Documents per SEP-991, not SEP-2577.
+  const r = TS_SDK_RULES.TS_SDK_V1_AUTH_MOVED;
+  assert.ok(!/is removed outright/.test(r.explanation), 'the 0.14.0 wording is gone');
+  assert.match(r.explanation, /registerClient\(\)` is NOT removed/);
+  assert.match(r.explanation, /SEP-991/);
+});
+
+test('JSONRPCResponse reports the silent widening, not a plain rename', () => {
+  const dir = project({
+    'package.json': '{"dependencies":{"@modelcontextprotocol/server":"^2.0.0"}}',
+    'a.ts': [
+      "import { JSONRPCResponseSchema, isJSONRPCResponse } from '@modelcontextprotocol/sdk/types.js';",
+      'export const p = (m: unknown) => JSONRPCResponseSchema.parse(m);',
+      'export const g = isJSONRPCResponse;',
+    ].join('\n'),
+  });
+  const res = runCli([dir]);
+  rmSync(dir, { recursive: true, force: true });
+  const f = res.findings.find((x) => x.patternId === 'TS_SDK_V1_JSONRPC_RESPONSE');
+  assert.ok(f, show(res.findings));
+  assert.match(f.explanation, /silent widening/);
+  assert.match(f.explanation, /JSONRPCResultResponseSchema/);
+});
+
+test('completable optional nesting: the v1 form fires, the v2 form does not', () => {
+  const dir = project({
+    'package.json': '{"dependencies":{"@modelcontextprotocol/server":"^2.0.0","zod":"^4.2.0"}}',
+    'a.ts': [
+      "import { completable } from '@modelcontextprotocol/sdk/server/completable.js';",
+      "import { z } from 'zod';",
+      'export const bad = completable(z.string().optional(), async () => []);',
+      'export const good = completable(z.string(), async () => []).optional();',
+    ].join('\n'),
+  });
+  const res = runCli([dir]);
+  rmSync(dir, { recursive: true, force: true });
+  const hits = res.findings.filter((f) => f.patternId === 'TS_SDK_V1_COMPLETABLE_NESTING');
+  assert.equal(hits.length, 1, show(res.findings));
+  assert.equal(hits[0].line, 3, 'the v1 nesting only');
+});
+
+test('finishAuth needs positive evidence of a code string, not absence of params', () => {
+  // The guide calls the two one-argument forms "statically indistinguishable".
+  // The SDK's own examples pass URLSearchParams as `params`, `callbackParams`
+  // and the result of a helper call; every one of those must stay clean.
+  const dir = project({
+    'package.json': '{"dependencies":{"@modelcontextprotocol/client":"^2.0.0"}}',
+    'a.ts': [
+      "import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';",
+      'export async function go(t: any, code: string, url: string, params: any) {',
+      '  await t.finishAuth(code);',
+      '  await t.finishAuth(new URL(url).searchParams);',
+      '  await t.finishAuth(params);',
+      '  await t.finishAuth(callbackParams);',
+      '  await t.finishAuth(await followAuthorize(url));',
+      '}',
+      'declare const callbackParams: any; declare function followAuthorize(u: string): Promise<any>;',
+      'export const T = StreamableHTTPClientTransport;',
+    ].join('\n'),
+  });
+  const res = runCli([dir]);
+  rmSync(dir, { recursive: true, force: true });
+  const hits = res.findings.filter((f) => f.patternId === 'TS_SDK_V1_FINISH_AUTH');
+  assert.equal(hits.length, 1, `only the bare code string: ${show(res.findings)}`);
+  assert.equal(hits[0].line, 3);
+});
+
+test('the handler context parameter is read off the signature, not assumed to be `extra`', () => {
+  const dir = project({
+    'package.json': '{"dependencies":{"@modelcontextprotocol/server":"^2.0.0"}}',
+    'a.ts': [
+      "import { MCPServer } from '@modelcontextprotocol/server';",
+      'export function wire(s: any) {',
+      "  s.setRequestHandler('tools/call', async (req: any, e: any) => e.signal.aborted);",
+      "  s.setRequestHandler('resources/read', async (req: any, ctx: any) => ctx.sessionId);",
+      "  s.setRequestHandler('prompts/get', async (req: any, e2: any) => e2.sessionId);",
+      '}',
+      'export const S = MCPServer;',
+    ].join('\n'),
+  });
+  const res = runCli([dir]);
+  rmSync(dir, { recursive: true, force: true });
+  const hits = res.findings.filter((f) => f.patternId === 'TS_SDK_V1_HANDLER_EXTRA');
+  assert.equal(hits.length, 1, show(res.findings));
+  assert.equal(hits[0].line, 3, 'a moved property on a resolved parameter name');
+  // `sessionId` keeps its name in v2, so it is only evidence on a literal
+  // `extra` — neither `ctx.sessionId` nor `e2.sessionId` may fire.
+});
+
+test('import-equals require() carries the same module evidence', () => {
+  const dir = project({
+    'package.json': '{"dependencies":{"@modelcontextprotocol/server":"^2.0.0"}}',
+    'a.cts': "import sdk = require('@modelcontextprotocol/sdk/types.js');\nexport const x = sdk;\n",
+  });
+  const res = runCli([dir]);
+  rmSync(dir, { recursive: true, force: true });
+  assert.ok(
+    res.findings.some((f) => f.patternId === 'TS_SDK_V1_MONOLITH'),
+    show(res.findings),
+  );
 });
 
 test('a local class named McpError with no MCP import stays clean', () => {
