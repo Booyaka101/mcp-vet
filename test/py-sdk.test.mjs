@@ -115,11 +115,11 @@ test('detectMcpSdk resolves pyproject, requirements.txt, and uv.lock (lock wins)
   assert.equal(req.source, 'requirements.txt');
   assert.equal(req.httpxDeclared, true, 'httpx==0.28.1 is a direct declaration');
 
-  // The bare "mcp" in pyproject is undetermined; the uv.lock 2.1.1 pin decides.
+  // The bare "mcp" in pyproject is undetermined; the uv.lock 2.2.0 pin decides.
   const uv = detectMcpSdk(join(pyFixtures, 'uv-project'));
   assert.equal(uv.major, 'v2');
   assert.equal(uv.source, 'uv.lock');
-  assert.match(uv.specifier, /2\.1\.1/);
+  assert.equal(uv.specifier, '2.2.0 (locked)');
 
   // No manifest anywhere up the tree of a temp dir → undetermined.
   const dir = mkdtempSync(join(tmpdir(), 'mcp-vet-nomanifest-'));
