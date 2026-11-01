@@ -94,8 +94,16 @@ test('detectTsSdk classifies the declared package family', () => {
 test('all three lockfile formats resolve the family when package.json is silent', () => {
   const pkg = '{"name":"x","version":"1.0.0","dependencies":{"zod":"^4.2.0"}}';
 
-  clearSdkDetectionCache();
-  assert.equal(detectTsSdk(join(tsFixtures, 'pnpm-project')).major, 'v2', 'pnpm-lock.yaml');
+  // Synthetic lock entries are parser input, not installed dependencies for Dependabot.
+  const pnpmDir = project({
+    'package.json': pkg,
+    'pnpm-lock.yaml': readFileSync(join(tsFixtures, 'pnpm-project', 'pnpm-lock.yaml.fixture'), 'utf8'),
+  });
+  const pnpmRes = detectTsSdk(pnpmDir);
+  rmSync(pnpmDir, { recursive: true, force: true });
+  assert.equal(pnpmRes.major, 'v2', 'pnpm-lock.yaml');
+  assert.equal(pnpmRes.specifier, '@modelcontextprotocol/server@2.0.0 + @modelcontextprotocol/core@2.0.0 (locked)');
+  assert.equal(pnpmRes.source, 'pnpm-lock.yaml');
 
   const npmDir = project({
     'package.json': pkg,
