@@ -72,7 +72,8 @@ test('detectTsSdk classifies the declared package family', () => {
   const v2 = detectTsSdk(join(tsFixtures, 'v2-server'));
   assert.equal(v2.major, 'v2');
   assert.equal(v2.source, 'package.json');
-  assert.equal(v2.zodBelowFloor, true, 'zod ^3.25 || ^4.0 dips below the 4.2.0 floor');
+  assert.match(v2.zodSpecifier, /^\d+\.\d+\.\d+$/, 'Dependabot needs an exact version without a lockfile');
+  assert.equal(v2.zodBelowFloor, true, 'keep the v2 fixture below the 4.2.0 floor');
 
   const v1 = detectTsSdk(join(tsFixtures, 'v1-server'));
   assert.equal(v1.major, 'v1');
@@ -545,7 +546,7 @@ test('a below-floor zod range fires only in a file that imports the SDK', () => 
   const zod3 = kitchen.findings.find((f) => f.patternId === 'TS_SDK_V1_ZOD3');
   assert.ok(zod3, show(kitchen.findings));
   assert.match(zod3.explanation, /\^4\.2\.0/, 'names the v2 floor');
-  assert.match(zod3.explanation, /The project declares zod \^3\.25 \|\| \^4\.0\./);
+  assert.match(zod3.explanation, /The project declares zod 3\.25\.0\./);
 
   // At the floor, nothing fires.
   const ok = runCli([join(tsFixtures, 'v2-ported')]);
