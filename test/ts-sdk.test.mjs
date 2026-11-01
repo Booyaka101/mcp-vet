@@ -533,6 +533,11 @@ test('a local class named McpError with no MCP import stays clean', () => {
 });
 
 test('a below-floor zod range fires only in a file that imports the SDK', () => {
+  const pkg = JSON.parse(readFileSync(join(tsFixtures, 'negatives', 'package.json'), 'utf8'));
+  assert.match(pkg.dependencies.zod, /^\d+\.\d+\.\d+$/, 'Dependabot needs an exact version without a lockfile');
+  clearSdkDetectionCache();
+  assert.equal(detectTsSdk(join(tsFixtures, 'negatives')).zodBelowFloor, true, 'keep the negative below the SDK floor');
+
   const plain = runCli([join(tsFixtures, 'negatives', 'plain-zod.ts')]);
   assert.equal(plain.findings.length, 0, `no MCP import: ${show(plain.findings)}`);
 
