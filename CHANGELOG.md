@@ -4,6 +4,21 @@ All notable changes to `mcp-vet` are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.15.1]
+
+### Fixed
+
+- Keep synthetic pnpm lockfile data outside the repository dependency graph,
+  preventing Dependabot security updates from targeting orphan test entries.
+- Pin the negative Zod fixture to an exact version for Dependabot compatibility.
+- Add fixture-isolation regression coverage and failure-safe temporary-project
+  cleanup for lockfile detection tests.
+
+### Maintenance
+
+- Update development dependencies and Python SDK fixture dependencies.
+- No scanner rule or public API changes.
+
 ## [0.15.0]
 
 Measured the 0.14.0 TypeScript group instead of assuming it, and fixed what the
