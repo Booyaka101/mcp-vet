@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, writeFileSync, rmSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync, rmSync, mkdirSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -91,11 +91,28 @@ test('detectTsSdk classifies the declared package family', () => {
   assert.equal(none.major, 'undetermined');
 });
 
-test('all three lockfile formats resolve the family when package.json is silent', () => {
+test('synthetic pnpm input stays outside the repository dependency graph', () => {
+  const dir = join(tsFixtures, 'pnpm-project');
+  assert.equal(existsSync(join(dir, 'pnpm-lock.yaml')), false, 'materialize synthetic locks only in temporary projects');
+  clearSdkDetectionCache();
+  const result = detectTsSdk(dir);
+  assert.equal(result.major, 'none', 'the fixture data must not declare an installed MCP SDK');
+  assert.equal(result.source, undefined);
+});
+
+test('all three lockfile formats resolve the family when package.json is silent', (t) => {
   const pkg = '{"name":"x","version":"1.0.0","dependencies":{"zod":"^4.2.0"}}';
 
-  clearSdkDetectionCache();
-  assert.equal(detectTsSdk(join(tsFixtures, 'pnpm-project')).major, 'v2', 'pnpm-lock.yaml');
+  // Synthetic lock entries are parser input, not installed dependencies for Dependabot.
+  const pnpmDir = project({
+    'package.json': pkg,
+    'pnpm-lock.yaml': readFileSync(join(tsFixtures, 'pnpm-project', 'pnpm-lock.yaml.fixture'), 'utf8'),
+  });
+  t.after(() => rmSync(pnpmDir, { recursive: true, force: true }));
+  const pnpmRes = detectTsSdk(pnpmDir);
+  assert.equal(pnpmRes.major, 'v2', 'pnpm-lock.yaml');
+  assert.equal(pnpmRes.specifier, '@modelcontextprotocol/server@2.0.0 + @modelcontextprotocol/core@2.0.0 (locked)');
+  assert.equal(pnpmRes.source, 'pnpm-lock.yaml');
 
   const npmDir = project({
     'package.json': pkg,
@@ -104,8 +121,8 @@ test('all three lockfile formats resolve the family when package.json is silent'
       packages: { 'node_modules/@modelcontextprotocol/sdk': { version: '1.30.0' } },
     }),
   });
+  t.after(() => rmSync(npmDir, { recursive: true, force: true }));
   const npmRes = detectTsSdk(npmDir);
-  rmSync(npmDir, { recursive: true, force: true });
   assert.equal(npmRes.major, 'v1');
   assert.equal(npmRes.specifier, '1.30.0 (locked)');
   assert.equal(npmRes.source, 'package-lock.json');
@@ -119,8 +136,8 @@ test('all three lockfile formats resolve the family when package.json is silent'
       '',
     ].join('\n'),
   });
+  t.after(() => rmSync(yarnDir, { recursive: true, force: true }));
   const yarnRes = detectTsSdk(yarnDir);
-  rmSync(yarnDir, { recursive: true, force: true });
   assert.equal(yarnRes.major, 'v2');
   assert.equal(yarnRes.source, 'yarn.lock');
 });
