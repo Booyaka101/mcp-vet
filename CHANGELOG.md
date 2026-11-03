@@ -4,6 +4,13 @@ All notable changes to `mcp-vet` are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.15.2]
+
+### Fixed
+
+- Pin the private TypeScript SDK v2 server's Zod fixture to an exact version so Dependabot can process security updates without a lockfile.
+- Keep the intentional below-floor migration finding covered by regression tests. No scanner rule or public API changes.
+
 ## [0.15.1]
 
 ### Fixed
